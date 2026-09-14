@@ -1,5 +1,7 @@
 // language: C++, file: lock.cpp, target: Windows 11, MSVC
 // *fullscreen lock, keyboard+mouse hook block, password release*
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
 #include <windows.h>
 #include <string>
 
