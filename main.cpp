@@ -1,5 +1,5 @@
 // language: C++, file: main.cpp, target: Windows 11, MSVC
-// *fullscreen lock + hello world overlay + password release, closes all windows*
+// *fullscreen lock + hello world overlay + password release*
 #include <windows.h>
 #include <string>
 
@@ -8,7 +8,6 @@
 
 #define ID_EDIT 1001
 #define ID_OK   1002
-
 #define HELLO_CLASS "HelloOverlay"
 
 static HHOOK g_kbHook = nullptr;
@@ -16,7 +15,6 @@ static HHOOK g_msHook = nullptr;
 static HWND  g_lockWnd = nullptr;
 static bool  g_unlocked = false;
 
-// ---- пароль XOR ----
 static const char ENC[] = {0x11,0x12,0x13,0x14}; // "3252" ^ 0x21
 static const char KEY = 0x21;
 
@@ -27,7 +25,6 @@ std::string DecodePassword()
     return s;
 }
 
-// ---- закрыть все окна процесса ----
 BOOL CALLBACK CloseProcWindows(HWND hwnd, LPARAM)
 {
     DWORD pid = 0;
@@ -37,7 +34,6 @@ BOOL CALLBACK CloseProcWindows(HWND hwnd, LPARAM)
     return TRUE;
 }
 
-// ---- оверлей Hello World: прозрачный для кликов, поверх всего ----
 LRESULT CALLBACK HelloProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -50,7 +46,7 @@ LRESULT CALLBACK HelloProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         GetClientRect(hwnd, &rc);
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(0, 255, 0));
-        for (int i = 0; i < 40; ++i)
+        for (int i = 0; i < 20; ++i)
         {
             RECT line = rc;
             line.top = 5 + i * 22;
@@ -66,7 +62,6 @@ LRESULT CALLBACK HelloProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
-// ---- keyboard hook ----
 LRESULT CALLBACK KbProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION)
@@ -87,7 +82,6 @@ LRESULT CALLBACK KbProc(int nCode, WPARAM wParam, LPARAM lParam)
     return CallNextHookEx(g_kbHook, nCode, wParam, lParam);
 }
 
-// ---- mouse hook: только блок правого клика и кликов вне пароль-окна ----
 LRESULT CALLBACK MsProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION)
@@ -105,7 +99,6 @@ LRESULT CALLBACK MsProc(int nCode, WPARAM wParam, LPARAM lParam)
     return CallNextHookEx(g_msHook, nCode, wParam, lParam);
 }
 
-// ---- фокус-кипер: пароль-окно всегда активно, hello-окна поверх ----
 DWORD WINAPI FocusKeeper(LPVOID)
 {
     while (!g_unlocked)
@@ -128,7 +121,6 @@ LRESULT CALLBACK LockProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CREATE:
     {
         int sw = GetSystemMetrics(SM_CXSCREEN);
-        int sh = GetSystemMetrics(SM_CYSCREEN);
 
         CreateWindowA("STATIC",
             "ВАШЕ УСТРОЙСТВО ЗАБЛОКИРОВАНО\n\nВведите пароль:",
@@ -162,9 +154,7 @@ LRESULT CALLBACK LockProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 if (g_kbHook) { UnhookWindowsHookEx(g_kbHook); g_kbHook = nullptr; }
                 if (g_msHook) { UnhookWindowsHookEx(g_msHook); g_msHook = nullptr; }
 
-                // закрыть ВСЕ окна процесса — включая hello-оверлеи
                 EnumWindows(CloseProcWindows, 0);
-
                 PostQuitMessage(0);
             }
             else
@@ -188,7 +178,6 @@ LRESULT CALLBACK LockProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
-    // ---- регистрируем оба класса ----
     WNDCLASSA wcLock = {};
     wcLock.lpfnWndProc = LockProc;
     wcLock.hInstance = hInst;
@@ -201,14 +190,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     wcHello.lpfnWndProc = HelloProc;
     wcHello.hInstance = hInst;
     wcHello.lpszClassName = HELLO_CLASS;
-    wcHello.hbrBackground = nullptr; // без фона
+    wcHello.hbrBackground = nullptr;
     wcHello.hCursor = LoadCursor(nullptr, IDC_ARROW);
     RegisterClassA(&wcHello);
 
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
-    // ---- 1) сначала пароль-окно (снизу) ----
     g_lockWnd = CreateWindowExA(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         "LockScreen", "",
@@ -218,8 +206,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     if (!g_lockWnd) return 1;
 
-    // ---- 2) hello-оверлеи ПОВЕРХ, клики сквозь них ----
-    const int HELLO_COUNT = 40;
+    const int HELLO_COUNT = 20;
     for (int i = 0; i < HELLO_COUNT; ++i)
     {
         int w = 300;
@@ -236,17 +223,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
             nullptr, nullptr, hInst, nullptr);
 
         if (hw)
-        {
-            // лёгкая прозрачность, чтобы пароль-окно читалось под ними
-            SetLayeredWindowAttributes(hw, 0, 200, LWA_ALPHA);
-        }
+            SetLayeredWindowAttributes(hw, 0, 180, LWA_ALPHA);
     }
 
-    // ---- 3) хуки ----
     g_kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, KbProc, hInst, 0);
     g_msHook = SetWindowsHookEx(WH_MOUSE_LL, MsProc, hInst, 0);
 
-    // ---- 4) фокус-кипер ----
     CreateThread(nullptr, 0, FocusKeeper, nullptr, 0, nullptr);
 
     MSG msg;
