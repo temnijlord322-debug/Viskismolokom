@@ -1,82 +1,37 @@
-// C++ / Windows 11 / MSVC
-// Безопасная демонстрационная версия
-//
-// Функционал:
-//  - полноэкранное окно с вводом пароля
-//  - пароль: 3252
-//  - 40 окон "Hello World!" поверх основного окна
-//  - после правильного пароля закрываются окна только этой программы
-//  - системные клавиши и мышь НЕ блокируются
-//  - ошибки запуска показываются пользователю
-
 #include <windows.h>
 #include <string>
 
 #pragma comment(lib, "user32.lib")
-#pragma comment(lib, "gdi32.lib")
 
 #define ID_EDIT 1001
 #define ID_OK   1002
 
-const char LOCK_CLASS[]  = "DemoLockScreen";
-const char HELLO_CLASS[] = "DemoHelloWorld";
+const char MAIN_CLASS[]  = "DemoMainWindow";
+const char HELLO_CLASS[] = "DemoHelloWindow";
 
-HWND g_lockWnd = nullptr;
-
-// ============================================================
-// Пароль
-// ============================================================
-
-const char PASSWORD[] = "3252";
+HWND g_mainWindow = nullptr;
 
 // ============================================================
-// Показать ошибку Windows
+// Закрываем только окна этой программы
 // ============================================================
 
-void ShowWindowsError(const char* operation)
-{
-    DWORD error = GetLastError();
-
-    char message[512] = {};
-
-    wsprintfA(
-        message,
-        "%s\n\nКод ошибки Windows: %lu",
-        operation,
-        error
-    );
-
-    MessageBoxA(
-        nullptr,
-        message,
-        "Ошибка",
-        MB_OK | MB_ICONERROR
-    );
-}
-
-// ============================================================
-// Закрыть только окна текущего процесса
-// ============================================================
-
-BOOL CALLBACK CloseOurWindows(HWND hwnd, LPARAM)
+BOOL CALLBACK CloseOwnWindows(HWND hwnd, LPARAM)
 {
     DWORD pid = 0;
 
     GetWindowThreadProcessId(hwnd, &pid);
 
     if (pid == GetCurrentProcessId())
-    {
         DestroyWindow(hwnd);
-    }
 
     return TRUE;
 }
 
 // ============================================================
-// Окно Hello World
+// Окна Hello World!
 // ============================================================
 
-LRESULT CALLBACK HelloProc(
+LRESULT CALLBACK HelloWindowProc(
     HWND hwnd,
     UINT msg,
     WPARAM wParam,
@@ -87,40 +42,41 @@ LRESULT CALLBACK HelloProc(
     case WM_PAINT:
     {
         PAINTSTRUCT ps;
-
         HDC hdc = BeginPaint(hwnd, &ps);
 
         RECT rc;
         GetClientRect(hwnd, &rc);
 
         SetBkMode(hdc, TRANSPARENT);
+
+        // Зелёный текст
         SetTextColor(
             hdc,
             RGB(0, 255, 0)
         );
 
+        // Несколько надписей
         for (int i = 0; i < 10; ++i)
         {
-            RECT line = rc;
+            RECT textRect = rc;
 
-            line.top =
+            textRect.top =
                 10 + i * 22;
 
-            line.bottom =
-                line.top + 22;
+            textRect.bottom =
+                textRect.top + 22;
 
             DrawTextA(
                 hdc,
                 "Hello World!",
                 -1,
-                &line,
+                &textRect,
                 DT_CENTER |
                 DT_SINGLELINE
             );
         }
 
         EndPaint(hwnd, &ps);
-
         return 0;
     }
 
@@ -141,10 +97,10 @@ LRESULT CALLBACK HelloProc(
 }
 
 // ============================================================
-// Главное окно с паролем
+// Главное окно
 // ============================================================
 
-LRESULT CALLBACK LockProc(
+LRESULT CALLBACK MainWindowProc(
     HWND hwnd,
     UINT msg,
     WPARAM wParam,
@@ -154,37 +110,48 @@ LRESULT CALLBACK LockProc(
     {
     case WM_CREATE:
     {
-        int sw =
-            GetSystemMetrics(
-                SM_CXSCREEN
-            );
+        int screenWidth =
+            GetSystemMetrics(SM_CXSCREEN);
 
         // ----------------------------------------------------
-        // Текст
+        // Заголовок
         // ----------------------------------------------------
 
-        HWND label = CreateWindowA(
+        HWND title = CreateWindowA(
             "STATIC",
-            "ДЕМОНСТРАЦИОННЫЙ ЭКРАН\n\nВведите пароль:",
+            "ДЕМОНСТРАЦИОННОЕ ОКНО",
             WS_VISIBLE |
             WS_CHILD |
             SS_CENTER,
             0,
-            200,
-            sw,
-            100,
+            160,
+            screenWidth,
+            40,
             hwnd,
             nullptr,
             nullptr,
             nullptr
         );
 
-        if (!label)
-        {
-            ShowWindowsError(
-                "Не удалось создать текстовое поле."
-            );
-        }
+        // ----------------------------------------------------
+        // Инструкция
+        // ----------------------------------------------------
+
+        HWND instruction = CreateWindowA(
+            "STATIC",
+            "Введите пароль:",
+            WS_VISIBLE |
+            WS_CHILD |
+            SS_CENTER,
+            0,
+            220,
+            screenWidth,
+            40,
+            hwnd,
+            nullptr,
+            nullptr,
+            nullptr
+        );
 
         // ----------------------------------------------------
         // Поле пароля
@@ -198,22 +165,15 @@ LRESULT CALLBACK LockProc(
             WS_CHILD |
             ES_PASSWORD |
             ES_CENTER,
-            sw / 2 - 150,
-            320,
+            screenWidth / 2 - 150,
+            280,
             300,
-            32,
+            35,
             hwnd,
             (HMENU)ID_EDIT,
             nullptr,
             nullptr
         );
-
-        if (!edit)
-        {
-            ShowWindowsError(
-                "Не удалось создать поле пароля."
-            );
-        }
 
         // ----------------------------------------------------
         // Кнопка
@@ -225,33 +185,29 @@ LRESULT CALLBACK LockProc(
             WS_VISIBLE |
             WS_CHILD |
             BS_DEFPUSHBUTTON,
-            sw / 2 - 100,
-            370,
-            200,
-            40,
+            screenWidth / 2 - 110,
+            340,
+            220,
+            45,
             hwnd,
             (HMENU)ID_OK,
             nullptr,
             nullptr
         );
 
-        if (!button)
-        {
-            ShowWindowsError(
-                "Не удалось создать кнопку."
-            );
-        }
+        // Убираем предупреждения компилятора
+        (void)title;
+        (void)instruction;
+        (void)button;
 
         if (edit)
-        {
             SetFocus(edit);
-        }
 
         return 0;
     }
 
     // ========================================================
-    // Нажатие кнопки
+    // Нажата кнопка
     // ========================================================
 
     case WM_COMMAND:
@@ -264,27 +220,27 @@ LRESULT CALLBACK LockProc(
                     ID_EDIT
                 );
 
-            char buf[64] = {};
+            char password[64] = {};
 
             if (edit)
             {
                 GetWindowTextA(
                     edit,
-                    buf,
-                    sizeof(buf)
+                    password,
+                    sizeof(password)
                 );
             }
 
             // ------------------------------------------------
-            // Проверяем пароль
+            // Пароль 3252
             // ------------------------------------------------
 
-            if (std::string(buf) == PASSWORD)
+            if (std::string(password) == "3252")
             {
-                // Закрываем только окна
-                // нашего процесса.
+                // Закрываем все окна,
+                // принадлежащие только этой программе.
                 EnumWindows(
-                    CloseOurWindows,
+                    CloseOwnWindows,
                     0
                 );
 
@@ -302,7 +258,7 @@ LRESULT CALLBACK LockProc(
 
                 MessageBoxA(
                     hwnd,
-                    "Неверный пароль.",
+                    "Неверный пароль!",
                     "Ошибка",
                     MB_OK |
                     MB_ICONERROR
@@ -341,218 +297,224 @@ LRESULT CALLBACK LockProc(
 // ============================================================
 
 int WINAPI WinMain(
-    HINSTANCE hInst,
+    HINSTANCE hInstance,
     HINSTANCE,
     LPSTR,
     int)
 {
-    // ========================================================
-    // Размер экрана
-    // ========================================================
+    int screenWidth =
+        GetSystemMetrics(SM_CXSCREEN);
 
-    int sw =
-        GetSystemMetrics(
-            SM_CXSCREEN
-        );
-
-    int sh =
-        GetSystemMetrics(
-            SM_CYSCREEN
-        );
+    int screenHeight =
+        GetSystemMetrics(SM_CYSCREEN);
 
     // ========================================================
-    // Регистрируем главное окно
+    // Регистрация главного окна
     // ========================================================
 
-    WNDCLASSA wcLock = {};
+    WNDCLASSA mainClass = {};
 
-    wcLock.lpfnWndProc =
-        LockProc;
+    mainClass.lpfnWndProc =
+        MainWindowProc;
 
-    wcLock.hInstance =
-        hInst;
+    mainClass.hInstance =
+        hInstance;
 
-    wcLock.lpszClassName =
-        LOCK_CLASS;
+    mainClass.lpszClassName =
+        MAIN_CLASS;
 
-    wcLock.hbrBackground =
-        CreateSolidBrush(
-            RGB(10, 10, 10)
-        );
+    mainClass.hbrBackground =
+        (HBRUSH)(COLOR_WINDOW + 1);
 
-    wcLock.hCursor =
+    mainClass.hCursor =
         LoadCursorA(
             nullptr,
             IDC_ARROW
         );
 
-    if (!RegisterClassA(&wcLock))
+    if (!RegisterClassA(&mainClass))
     {
-        DWORD error =
-            GetLastError();
+        DWORD error = GetLastError();
 
-        // ERROR_CLASS_ALREADY_EXISTS
-        // можно считать некритичной ошибкой.
         if (error != ERROR_CLASS_ALREADY_EXISTS)
         {
-            ShowWindowsError(
-                "Не удалось зарегистрировать класс главного окна."
+            char text[256];
+
+            wsprintfA(
+                text,
+                "Ошибка регистрации главного окна.\n\nКод: %lu",
+                error
             );
 
-            return 1;
+            MessageBoxA(
+                nullptr,
+                text,
+                "Ошибка",
+                MB_OK | MB_ICONERROR
+            );
+
+            return 0;
         }
     }
 
     // ========================================================
-    // Регистрируем Hello World
+    // Регистрация Hello World
     // ========================================================
 
-    WNDCLASSA wcHello = {};
+    WNDCLASSA helloClass = {};
 
-    wcHello.lpfnWndProc =
-        HelloProc;
+    helloClass.lpfnWndProc =
+        HelloWindowProc;
 
-    wcHello.hInstance =
-        hInst;
+    helloClass.hInstance =
+        hInstance;
 
-    wcHello.lpszClassName =
+    helloClass.lpszClassName =
         HELLO_CLASS;
 
-    wcHello.hbrBackground =
-        nullptr;
+    helloClass.hbrBackground =
+        (HBRUSH)(COLOR_WINDOW + 1);
 
-    wcHello.hCursor =
+    helloClass.hCursor =
         LoadCursorA(
             nullptr,
             IDC_ARROW
         );
 
-    if (!RegisterClassA(&wcHello))
+    if (!RegisterClassA(&helloClass))
     {
-        DWORD error =
-            GetLastError();
+        DWORD error = GetLastError();
 
         if (error != ERROR_CLASS_ALREADY_EXISTS)
         {
-            ShowWindowsError(
-                "Не удалось зарегистрировать класс Hello World."
+            char text[256];
+
+            wsprintfA(
+                text,
+                "Ошибка регистрации Hello World.\n\nКод: %lu",
+                error
             );
 
-            return 1;
+            MessageBoxA(
+                nullptr,
+                text,
+                "Ошибка",
+                MB_OK | MB_ICONERROR
+            );
+
+            return 0;
         }
     }
 
     // ========================================================
-    // Создаём главное окно
+    // Создаём основное полноэкранное окно
     // ========================================================
 
-    g_lockWnd =
-        CreateWindowExA(
-            0,
-            LOCK_CLASS,
-            "Demo Lock Screen",
-            WS_POPUP |
-            WS_VISIBLE,
-            0,
-            0,
-            sw,
-            sh,
-            nullptr,
-            nullptr,
-            hInst,
-            nullptr
-        );
+    g_mainWindow = CreateWindowExA(
+        0,
+        MAIN_CLASS,
+        "Password Demo",
+        WS_POPUP |
+        WS_VISIBLE,
+        0,
+        0,
+        screenWidth,
+        screenHeight,
+        nullptr,
+        nullptr,
+        hInstance,
+        nullptr
+    );
 
-    if (!g_lockWnd)
+    if (!g_mainWindow)
     {
-        ShowWindowsError(
-            "Не удалось создать главное окно."
+        DWORD error = GetLastError();
+
+        char text[256];
+
+        wsprintfA(
+            text,
+            "Не удалось создать главное окно.\n\nКод Windows: %lu",
+            error
         );
 
-        return 1;
+        MessageBoxA(
+            nullptr,
+            text,
+            "Ошибка",
+            MB_OK | MB_ICONERROR
+        );
+
+        return 0;
     }
 
     // ========================================================
-    // Создаём Hello World окна
+    // Создаём 40 окон Hello World поверх основного окна
     // ========================================================
 
     const int HELLO_COUNT = 40;
 
-    for (int i = 0;
-         i < HELLO_COUNT;
-         ++i)
+    for (int i = 0; i < HELLO_COUNT; ++i)
     {
-        const int w = 300;
-        const int h = 250;
+        const int width  = 280;
+        const int height = 180;
 
         int maxX =
-            (sw > w)
-            ? sw - w
-            : 1;
+            screenWidth - width;
 
         int maxY =
-            (sh > h)
-            ? sh - h
-            : 1;
+            screenHeight - height;
+
+        if (maxX < 1)
+            maxX = 1;
+
+        if (maxY < 1)
+            maxY = 1;
 
         int x =
-            (i * 37) % maxX;
+            (i * 67) % maxX;
 
         int y =
-            (i * 53) % maxY;
+            (i * 43) % maxY;
 
-        HWND hello =
-            CreateWindowExA(
-                WS_EX_TOPMOST |
-                WS_EX_TOOLWINDOW |
-                WS_EX_LAYERED,
-                HELLO_CLASS,
-                "",
-                WS_POPUP |
-                WS_VISIBLE,
-                x,
-                y,
-                w,
-                h,
-                nullptr,
-                nullptr,
-                hInst,
-                nullptr
+        HWND hello = CreateWindowExA(
+            WS_EX_TOPMOST |
+            WS_EX_TOOLWINDOW |
+            WS_EX_LAYERED,
+            HELLO_CLASS,
+            "",
+            WS_POPUP |
+            WS_VISIBLE,
+            x,
+            y,
+            width,
+            height,
+            nullptr,
+            nullptr,
+            hInstance,
+            nullptr
+        );
+
+        if (hello)
+        {
+            // Полупрозрачность
+            SetLayeredWindowAttributes(
+                hello,
+                0,
+                190,
+                LWA_ALPHA
             );
 
-        if (!hello)
-        {
-            // Не завершаем программу из-за одного
-            // не создавшегося Hello World окна.
-            continue;
+            SetWindowPos(
+                hello,
+                HWND_TOPMOST,
+                x,
+                y,
+                width,
+                height,
+                SWP_SHOWWINDOW
+            );
         }
-
-        // ----------------------------------------------------
-        // Полупрозрачность
-        // ----------------------------------------------------
-
-        SetLayeredWindowAttributes(
-            hello,
-            0,
-            200,
-            LWA_ALPHA
-        );
-
-        // ----------------------------------------------------
-        // Поверх главного окна
-        // ----------------------------------------------------
-
-        SetWindowPos(
-            hello,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE |
-            SWP_NOSIZE |
-            SWP_SHOWWINDOW
-        );
     }
 
     // ========================================================
@@ -566,23 +528,11 @@ int WINAPI WinMain(
             &msg,
             nullptr,
             0,
-            0
-        ) > 0)
+            0) > 0)
     {
         TranslateMessage(&msg);
 
         DispatchMessageA(&msg);
-    }
-
-    // ========================================================
-    // Очистка
-    // ========================================================
-
-    if (wcLock.hbrBackground)
-    {
-        DeleteObject(
-            wcLock.hbrBackground
-        );
     }
 
     return 0;
