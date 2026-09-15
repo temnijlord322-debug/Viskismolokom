@@ -16,8 +16,8 @@ using namespace Gdiplus;
 #define ID_LOADING_TIMER 2002
 #define ID_ANIM_TIMER    2003
 
-const char MAIN_CLASS[]   = "DemoMainWindow";
-const char HELLO_CLASS[]  = "DemoHelloWindow";
+const char MAIN_CLASS[]    = "DemoMainWindow";
+const char HELLO_CLASS[]   = "DemoHelloWindow";
 const wchar_t FLOOD_CLASS[] = L"DemoFloodWindow";
 
 HWND g_mainWindow = nullptr;
@@ -36,7 +36,7 @@ struct Drop {
     int length;
 };
 std::vector<Drop> g_drops;
-const int DROP_COUNT = 80;
+const int DROP_COUNT = 90;
 
 void InitDrops(int screenWidth, int screenHeight)
 {
@@ -48,8 +48,8 @@ void InitDrops(int screenWidth, int screenHeight)
         Drop d;
         d.x = rand() % screenWidth;
         d.y = (float)(rand() % screenHeight - screenHeight);
-        d.speed = 4.0f + (rand() % 12);
-        d.length = 8 + rand() % 20;
+        d.speed = 3.5f + (rand() % 14);
+        d.length = 10 + rand() % 22;
         g_drops.push_back(d);
     }
 }
@@ -59,11 +59,11 @@ void UpdateDrops(int screenHeight)
     for (auto& d : g_drops)
     {
         d.y += d.speed;
-        if (d.y > screenHeight + 50)
+        if (d.y > screenHeight + 80)
         {
-            d.y = (float)(-50 - rand() % 200);
+            d.y = (float)(-80 - rand() % 300);
             d.x = rand() % GetSystemMetrics(SM_CXSCREEN);
-            d.speed = 4.0f + (rand() % 12);
+            d.speed = 3.5f + (rand() % 14);
         }
     }
 }
@@ -261,7 +261,6 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         InitDrops(screenWidth, screenHeight);
 
-        // Загружаем картинку
         g_skullImage = new Image(L"skull.jpg");
         if (g_skullImage->GetLastStatus() != Ok)
         {
@@ -269,11 +268,8 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_skullImage = nullptr;
         }
 
-        // Таймер загрузки 5 секунд
         SetTimer(hwnd, ID_LOADING_TIMER, 5000, nullptr);
-        // Таймер анимации дождя
         SetTimer(hwnd, ID_ANIM_TIMER, 30, nullptr);
-
         return 0;
     }
 
@@ -281,21 +277,16 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     {
         if (wParam == ID_LOADING_TIMER)
         {
-            // Загрузка закончилась
             KillTimer(hwnd, ID_LOADING_TIMER);
             KillTimer(hwnd, ID_ANIM_TIMER);
             g_loading = false;
 
-            // Создаём интерфейс
             CreatePasswordUI(hwnd);
 
-            // Создаём 40 окон
             HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
             CreateHelloWindows(hInst);
 
-            // Только теперь запускаем минутный таймер
             SetTimer(hwnd, ID_TIMER, 60000, nullptr);
-
             InvalidateRect(hwnd, nullptr, TRUE);
         }
         else if (wParam == ID_ANIM_TIMER && g_loading)
@@ -322,55 +313,49 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (g_loading)
         {
-            // Чёрный фон
             HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
             FillRect(hdc, &rc, black);
             DeleteObject(black);
 
-            // Падающие символы
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(0, 255, 70));
 
-            HFONT font = CreateFontA(18, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            HFONT font = CreateFontW(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+                DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
             HFONT oldFont = (HFONT)SelectObject(hdc, font);
 
-            const char* chars = "01𰻞ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ";
-            int charCount = (int)strlen(chars);
+            const wchar_t* chars = L"01𰻞ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ";
+            int charCount = (int)wcslen(chars);
 
             for (const auto& d : g_drops)
             {
                 for (int j = 0; j < d.length; ++j)
                 {
-                    int py = (int)d.y - j * 18;
-                    if (py < -20 || py > rc.bottom) continue;
+                    int py = (int)d.y - j * 20;
+                    if (py < -30 || py > rc.bottom) continue;
 
-                    char c = chars[rand() % charCount];
-                    char str[2] = { c, 0 };
+                    wchar_t c = chars[rand() % charCount];
+                    wchar_t str[2] = { c, 0 };
 
-                    // Голова ярче
                     if (j == 0)
-                        SetTextColor(hdc, RGB(180, 255, 180));
+                        SetTextColor(hdc, RGB(200, 255, 200));
                     else
-                        SetTextColor(hdc, RGB(0, 180 + rand() % 70, 0));
+                        SetTextColor(hdc, RGB(0, 160 + rand() % 80, 0));
 
-                    TextOutA(hdc, d.x, py, str, 1);
+                    TextOutW(hdc, d.x, py, str, 1);
                 }
             }
 
             SelectObject(hdc, oldFont);
             DeleteObject(font);
 
-            // Картинка черепа по центру
             if (g_skullImage)
             {
                 int imgW = g_skullImage->GetWidth();
                 int imgH = g_skullImage->GetHeight();
 
-                // Масштабируем под экран (примерно 60% высоты)
-                int maxH = rc.bottom * 60 / 100;
-                int maxW = rc.right * 60 / 100;
+                int maxH = rc.bottom * 58 / 100;
+                int maxW = rc.right * 58 / 100;
 
                 float scale = min((float)maxW / imgW, (float)maxH / imgH);
                 int drawW = (int)(imgW * scale);
@@ -386,7 +371,6 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         else
         {
-            // Обычный фон после загрузки
             HBRUSH brush = CreateSolidBrush(RGB(240, 240, 240));
             FillRect(hdc, &rc, brush);
             DeleteObject(brush);
@@ -401,7 +385,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_COMMAND:
     {
-        if (g_loading) return 0; // во время загрузки ничего не делаем
+        if (g_loading) return 0;
 
         if (LOWORD(wParam) == ID_OK)
         {
@@ -462,7 +446,6 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-    // Инициализация GDI+
     GdiplusStartupInput gdiplusStartupInput;
     GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, nullptr);
 
@@ -490,7 +473,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     floodClass.hInstance     = hInstance;
     floodClass.lpszClassName = FLOOD_CLASS;
     floodClass.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    floodClass.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    floodClass.hCursor       = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);  // исправлено
     RegisterClassW(&floodClass);
 
     g_mainWindow = CreateWindowExA(
