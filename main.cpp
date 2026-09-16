@@ -4,26 +4,26 @@
 
 #pragma comment(lib, "user32.lib")
 
-const wchar_t CLASS_NAME[] = L"HelloWorld100x100";
+constexpr int WINDOW_COUNT = 100000;
+constexpr int TEXT_COUNT = 100000;
 
-const int WINDOW_COUNT = 10000;
-const int TEXT_COUNT = 10000;
+const wchar_t CLASS_NAME[] = L"HelloWorldWindow";
 
-std::wstring g_text;
-std::vector<HWND> g_windows;
+std::wstring helloText;
+std::vector<HWND> windowsList;
 
-std::wstring MakeText()
+// Создаём текст из 100 надписей
+void CreateHelloText()
 {
-    std::wstring text;
+    helloText.clear();
 
     for (int i = 0; i < TEXT_COUNT; ++i)
     {
-        text += L"Hello World!\r\n";
+        helloText += L"Hello World!\r\n";
     }
-
-    return text;
 }
 
+// Обработка окна
 LRESULT CALLBACK WindowProc(
     HWND hwnd,
     UINT msg,
@@ -32,65 +32,76 @@ LRESULT CALLBACK WindowProc(
 {
     switch (msg)
     {
-    case WM_PAINT:
-    {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-
-        HFONT font = CreateFontW(
-            20, 0, 0, 0,
-            FW_NORMAL,
-            FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE,
-            L"Segoe UI"
-        );
-
-        HFONT oldFont =
-            (HFONT)SelectObject(hdc, font);
-
-        DrawTextW(
-            hdc,
-            g_text.c_str(),
-            -1,
-            &rc,
-            DT_LEFT | DT_TOP
-        );
-
-        SelectObject(hdc, oldFont);
-        DeleteObject(font);
-
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-
-    case WM_CLOSE:
-        DestroyWindow(hwnd);
-        return 0;
-
-    case WM_DESTROY:
-    {
-        for (auto it = g_windows.begin();
-             it != g_windows.end(); ++it)
+        case WM_PAINT:
         {
-            if (*it == hwnd)
-            {
-                g_windows.erase(it);
-                break;
-            }
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+
+            HFONT font = CreateFontW(
+                18,
+                0,
+                0,
+                0,
+                FW_NORMAL,
+                FALSE,
+                FALSE,
+                FALSE,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY,
+                DEFAULT_PITCH | FF_DONTCARE,
+                L"Segoe UI"
+            );
+
+            HFONT oldFont =
+                (HFONT)SelectObject(hdc, font);
+
+            DrawTextW(
+                hdc,
+                helloText.c_str(),
+                -1,
+                &rect,
+                DT_LEFT | DT_TOP
+            );
+
+            SelectObject(hdc, oldFont);
+            DeleteObject(font);
+
+            EndPaint(hwnd, &ps);
+
+            return 0;
         }
 
-        if (g_windows.empty())
-            PostQuitMessage(0);
+        case WM_CLOSE:
+        {
+            DestroyWindow(hwnd);
+            return 0;
+        }
 
-        return 0;
-    }
+        case WM_DESTROY:
+        {
+            for (auto it = windowsList.begin();
+                 it != windowsList.end();
+                 ++it)
+            {
+                if (*it == hwnd)
+                {
+                    windowsList.erase(it);
+                    break;
+                }
+            }
+
+            if (windowsList.empty())
+            {
+                PostQuitMessage(0);
+            }
+
+            return 0;
+        }
     }
 
     return DefWindowProcW(
@@ -107,23 +118,35 @@ int WINAPI WinMain(
     LPSTR,
     int)
 {
-    // Создаём 100 надписей один раз
-    g_text = MakeText();
+    CreateHelloText();
 
+    // Регистрируем класс окна
     WNDCLASSW wc = {};
 
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
-    wc.hCursor = LoadCursorW(
+
+    // Курсор без LoadCursorW/LoadCursorA-проблемы
+    wc.hCursor = LoadCursor(
         nullptr,
         IDC_ARROW
     );
+
     wc.hbrBackground =
         (HBRUSH)(COLOR_WINDOW + 1);
 
     if (!RegisterClassW(&wc))
+    {
+        MessageBoxW(
+            nullptr,
+            L"Не удалось зарегистрировать класс окна.",
+            L"Ошибка",
+            MB_OK | MB_ICONERROR
+        );
+
         return 1;
+    }
 
     // Создаём 100 настоящих окон
     for (int i = 0; i < WINDOW_COUNT; ++i)
@@ -131,8 +154,8 @@ int WINAPI WinMain(
         int column = i % 10;
         int row = i / 10;
 
-        int x = 50 + column * 60;
-        int y = 50 + row * 60;
+        int x = 30 + column * 70;
+        int y = 30 + row * 70;
 
         HWND hwnd = CreateWindowExW(
             0,
@@ -141,18 +164,21 @@ int WINAPI WinMain(
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             x,
             y,
-            400,
-            300,
+            450,
+            350,
             nullptr,
             nullptr,
             hInstance,
             nullptr
         );
 
-        if (hwnd)
-            g_windows.push_back(hwnd);
+        if (hwnd != nullptr)
+        {
+            windowsList.push_back(hwnd);
+        }
     }
 
+    // Главный цикл
     MSG msg = {};
 
     while (GetMessageW(
