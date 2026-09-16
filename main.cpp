@@ -16,27 +16,28 @@ using namespace Gdiplus;
 #define ID_LOADING_TIMER 2002
 #define ID_ANIM_TIMER    2003
 
-const char MAIN_CLASS[]    = "DemoMainWindow";
-const char HELLO_CLASS[]   = "DemoHelloWindow";
+const char MAIN_CLASS[]     = "DemoMainWindow";
+const char HELLO_CLASS[]    = "DemoHelloWindow";
 const wchar_t FLOOD_CLASS[] = L"DemoFloodWindow";
 
 HWND g_mainWindow = nullptr;
 int  g_wrongAttempts = 0;
 bool g_timerExpired  = false;
 bool g_loading       = true;
+bool g_floodOpened   = false;
 
 Image* g_skullImage = nullptr;
 ULONG_PTR g_gdiplusToken = 0;
 
-// Матричный дождь
 struct Drop {
     int x;
     float y;
     float speed;
     int length;
 };
+
 std::vector<Drop> g_drops;
-const int DROP_COUNT = 90;
+const int DROP_COUNT = 280;
 
 void InitDrops(int screenWidth, int screenHeight)
 {
@@ -47,23 +48,23 @@ void InitDrops(int screenWidth, int screenHeight)
     {
         Drop d;
         d.x = rand() % screenWidth;
-        d.y = (float)(rand() % screenHeight - screenHeight);
-        d.speed = 3.5f + (rand() % 14);
-        d.length = 10 + rand() % 22;
+        d.y = (float)(-(rand() % (screenHeight + 400)));
+        d.speed = 2.5f + (rand() % 10);
+        d.length = 12 + rand() % 28;
         g_drops.push_back(d);
     }
 }
 
-void UpdateDrops(int screenHeight)
+void UpdateDrops(int screenWidth, int screenHeight)
 {
     for (auto& d : g_drops)
     {
         d.y += d.speed;
-        if (d.y > screenHeight + 80)
+        if (d.y > screenHeight + 60)
         {
-            d.y = (float)(-80 - rand() % 300);
-            d.x = rand() % GetSystemMetrics(SM_CXSCREEN);
-            d.speed = 3.5f + (rand() % 14);
+            d.y = (float)(-60 - rand() % 400);
+            d.x = rand() % screenWidth;
+            d.speed = 2.5f + (rand() % 10);
         }
     }
 }
@@ -100,11 +101,15 @@ LRESULT CALLBACK FloodWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         RECT rc;
         GetClientRect(hwnd, &rc);
 
+        HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(hdc, &rc, black);
+        DeleteObject(black);
+
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(0, 200, 0));
+        SetTextColor(hdc, RGB(0, 220, 0));
 
         const wchar_t* symbol = L"𰻞";
-        for (int i = 0; i < 1500; ++i)
+        for (int i = 0; i < 1600; ++i)
         {
             RECT textRect = rc;
             textRect.top    = (i % 55) * 15;
@@ -116,6 +121,8 @@ LRESULT CALLBACK FloodWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         EndPaint(hwnd, &ps);
         return 0;
     }
+    case WM_ERASEBKGND:
+        return 1;
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
@@ -133,6 +140,11 @@ LRESULT CALLBACK HelloWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT rc;
         GetClientRect(hwnd, &rc);
+
+        HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(hdc, &rc, black);
+        DeleteObject(black);
+
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(0, 255, 0));
         for (int i = 0; i < 10; ++i)
@@ -156,6 +168,10 @@ LRESULT CALLBACK HelloWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
 void OpenFloodWindows(HINSTANCE hInstance)
 {
+    if (g_floodOpened)
+        return;
+    g_floodOpened = true;
+
     const int screenWidth  = GetSystemMetrics(SM_CXSCREEN);
     const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
     const int FLOOD_COUNT = 1000;
@@ -173,7 +189,7 @@ void OpenFloodWindows(HINSTANCE hInstance)
         const int y = (i * 53) % maxY;
 
         HWND flood = CreateWindowExW(
-            WS_EX_APPWINDOW,
+            WS_EX_APPWINDOW | WS_EX_TOPMOST,
             FLOOD_CLASS,
             L"𰻞 𰻞 𰻞 𰻞 𰻞",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
@@ -185,6 +201,17 @@ void OpenFloodWindows(HINSTANCE hInstance)
             ShowWindow(flood, SW_SHOW);
             UpdateWindow(flood);
         }
+    }
+}
+
+void TryOpenFlood(HWND hwnd)
+{
+    if (g_timerExpired && g_wrongAttempts >= 6)
+    {
+        HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
+        if (!hInst)
+            hInst = GetModuleHandleA(nullptr);
+        OpenFloodWindows(hInst);
     }
 }
 
@@ -269,7 +296,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         SetTimer(hwnd, ID_LOADING_TIMER, 5000, nullptr);
-        SetTimer(hwnd, ID_ANIM_TIMER, 30, nullptr);
+        SetTimer(hwnd, ID_ANIM_TIMER, 25, nullptr);
         return 0;
     }
 
@@ -284,6 +311,8 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             CreatePasswordUI(hwnd);
 
             HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
+            if (!hInst)
+                hInst = GetModuleHandleA(nullptr);
             CreateHelloWindows(hInst);
 
             SetTimer(hwnd, ID_TIMER, 60000, nullptr);
@@ -291,16 +320,41 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         else if (wParam == ID_ANIM_TIMER && g_loading)
         {
-            UpdateDrops(GetSystemMetrics(SM_CYSCREEN));
+            UpdateDrops(GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         else if (wParam == ID_TIMER)
         {
             g_timerExpired = true;
             KillTimer(hwnd, ID_TIMER);
-            MessageBoxA(hwnd, "Таймер закончился!\nТеперь после 6 ошибок откроется спам.", "Инфо", MB_OK | MB_ICONINFORMATION);
+            TryOpenFlood(hwnd);
+            if (!g_floodOpened)
+            {
+                MessageBoxA(hwnd,
+                    "Таймер закончился!\nПосле 6 ошибок откроется спам.",
+                    "Инфо", MB_OK | MB_ICONINFORMATION);
+            }
         }
         return 0;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    {
+        HDC hdc = (HDC)wParam;
+        SetTextColor(hdc, RGB(0, 255, 70));
+        SetBkColor(hdc, RGB(0, 0, 0));
+        SetBkMode(hdc, TRANSPARENT);
+        static HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+        return (LRESULT)black;
+    }
+
+    case WM_CTLCOLOREDIT:
+    {
+        HDC hdc = (HDC)wParam;
+        SetTextColor(hdc, RGB(0, 255, 70));
+        SetBkColor(hdc, RGB(10, 10, 10));
+        static HBRUSH editBrush = CreateSolidBrush(RGB(10, 10, 10));
+        return (LRESULT)editBrush;
     }
 
     case WM_PAINT:
@@ -311,15 +365,16 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT rc;
         GetClientRect(hwnd, &rc);
 
+        HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(hdc, &rc, black);
+        DeleteObject(black);
+
         if (g_loading)
         {
-            HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
-            FillRect(hdc, &rc, black);
-            DeleteObject(black);
-
             SetBkMode(hdc, TRANSPARENT);
 
-            HFONT font = CreateFontW(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            HFONT font = CreateFontW(
+                12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
             HFONT oldFont = (HFONT)SelectObject(hdc, font);
@@ -331,8 +386,8 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             {
                 for (int j = 0; j < d.length; ++j)
                 {
-                    int py = (int)d.y - j * 20;
-                    if (py < -30 || py > rc.bottom) continue;
+                    int py = (int)d.y - j * 12;
+                    if (py < -20 || py > rc.bottom) continue;
 
                     wchar_t c = chars[rand() % charCount];
                     wchar_t str[2] = { c, 0 };
@@ -340,7 +395,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     if (j == 0)
                         SetTextColor(hdc, RGB(200, 255, 200));
                     else
-                        SetTextColor(hdc, RGB(0, 160 + rand() % 80, 0));
+                        SetTextColor(hdc, RGB(0, 140 + rand() % 90, 0));
 
                     TextOutW(hdc, d.x, py, str, 1);
                 }
@@ -351,8 +406,8 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             if (g_skullImage)
             {
-                int imgW = g_skullImage->GetWidth();
-                int imgH = g_skullImage->GetHeight();
+                int imgW = (int)g_skullImage->GetWidth();
+                int imgH = (int)g_skullImage->GetHeight();
 
                 int maxH = rc.bottom * 58 / 100;
                 int maxW = rc.right * 58 / 100;
@@ -369,12 +424,6 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 graphics.DrawImage(g_skullImage, dx, dy, drawW, drawH);
             }
         }
-        else
-        {
-            HBRUSH brush = CreateSolidBrush(RGB(240, 240, 240));
-            FillRect(hdc, &rc, brush);
-            DeleteObject(brush);
-        }
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -385,7 +434,8 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_COMMAND:
     {
-        if (g_loading) return 0;
+        if (g_loading)
+            return 0;
 
         if (LOWORD(wParam) == ID_OK)
         {
@@ -406,13 +456,9 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     SetWindowTextA(edit, "");
 
                 g_wrongAttempts++;
+                TryOpenFlood(hwnd);
 
-                if (g_timerExpired && g_wrongAttempts >= 6)
-                {
-                    HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
-                    OpenFloodWindows(hInst);
-                }
-                else
+                if (!g_floodOpened)
                 {
                     char buf[128];
                     wsprintfA(buf, "Неверный пароль!\nПопытка: %d / 6", g_wrongAttempts);
@@ -464,7 +510,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     helloClass.lpfnWndProc   = HelloWindowProc;
     helloClass.hInstance     = hInstance;
     helloClass.lpszClassName = HELLO_CLASS;
-    helloClass.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    helloClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     helloClass.hCursor       = LoadCursorA(nullptr, IDC_ARROW);
     RegisterClassA(&helloClass);
 
@@ -472,8 +518,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     floodClass.lpfnWndProc   = FloodWindowProc;
     floodClass.hInstance     = hInstance;
     floodClass.lpszClassName = FLOOD_CLASS;
-    floodClass.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    floodClass.hCursor       = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);  // исправлено
+    floodClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    floodClass.hCursor       = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
     RegisterClassW(&floodClass);
 
     g_mainWindow = CreateWindowExA(
