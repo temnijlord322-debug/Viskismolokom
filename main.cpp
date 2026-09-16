@@ -6,7 +6,7 @@
 #pragma comment(lib, "gdi32.lib")
 
 constexpr int WINDOW_COUNT = 10000;
-constexpr int TEXT_COUNT = 100000;
+constexpr int TEXT_COUNT = 100;
 
 const wchar_t CLASS_NAME[] = L"HelloWorldWindow";
 
