@@ -3,8 +3,9 @@
 #include <vector>
 
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
 
-constexpr int WINDOW_COUNT = 100000;
+constexpr int WINDOW_COUNT = 10000;
 constexpr int TEXT_COUNT = 100000;
 
 const wchar_t CLASS_NAME[] = L"HelloWorldWindow";
@@ -12,7 +13,6 @@ const wchar_t CLASS_NAME[] = L"HelloWorldWindow";
 std::wstring helloText;
 std::vector<HWND> windowsList;
 
-// Создаём текст из 100 надписей
 void CreateHelloText()
 {
     helloText.clear();
@@ -23,7 +23,6 @@ void CreateHelloText()
     }
 }
 
-// Обработка окна
 LRESULT CALLBACK WindowProc(
     HWND hwnd,
     UINT msg,
@@ -32,31 +31,30 @@ LRESULT CALLBACK WindowProc(
 {
     switch (msg)
     {
-        case WM_PAINT:
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+
+        RECT rect;
+        GetClientRect(hwnd, &rect);
+
+        SetBkMode(hdc, TRANSPARENT);
+
+        HFONT font = CreateFontW(
+            18, 0, 0, 0,
+            FW_NORMAL,
+            FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            L"Segoe UI"
+        );
+
+        if (font)
         {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-
-            RECT rect;
-            GetClientRect(hwnd, &rect);
-
-            HFONT font = CreateFontW(
-                18,
-                0,
-                0,
-                0,
-                FW_NORMAL,
-                FALSE,
-                FALSE,
-                FALSE,
-                DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,
-                CLIP_DEFAULT_PRECIS,
-                DEFAULT_QUALITY,
-                DEFAULT_PITCH | FF_DONTCARE,
-                L"Segoe UI"
-            );
-
             HFONT oldFont =
                 (HFONT)SelectObject(hdc, font);
 
@@ -70,38 +68,33 @@ LRESULT CALLBACK WindowProc(
 
             SelectObject(hdc, oldFont);
             DeleteObject(font);
-
-            EndPaint(hwnd, &ps);
-
-            return 0;
         }
 
-        case WM_CLOSE:
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+    {
+        for (auto it = windowsList.begin();
+             it != windowsList.end(); ++it)
         {
-            DestroyWindow(hwnd);
-            return 0;
+            if (*it == hwnd)
+            {
+                windowsList.erase(it);
+                break;
+            }
         }
 
-        case WM_DESTROY:
-        {
-            for (auto it = windowsList.begin();
-                 it != windowsList.end();
-                 ++it)
-            {
-                if (*it == hwnd)
-                {
-                    windowsList.erase(it);
-                    break;
-                }
-            }
+        if (windowsList.empty())
+            PostQuitMessage(0);
 
-            if (windowsList.empty())
-            {
-                PostQuitMessage(0);
-            }
-
-            return 0;
-        }
+        return 0;
+    }
     }
 
     return DefWindowProcW(
@@ -120,19 +113,12 @@ int WINAPI WinMain(
 {
     CreateHelloText();
 
-    // Регистрируем класс окна
     WNDCLASSW wc = {};
 
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
-
-    // Курсор без LoadCursorW/LoadCursorA-проблемы
-    wc.hCursor = LoadCursor(
-        nullptr,
-        IDC_ARROW
-    );
-
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground =
         (HBRUSH)(COLOR_WINDOW + 1);
 
@@ -140,7 +126,7 @@ int WINAPI WinMain(
     {
         MessageBoxW(
             nullptr,
-            L"Не удалось зарегистрировать класс окна.",
+            L"Ошибка регистрации окна.",
             L"Ошибка",
             MB_OK | MB_ICONERROR
         );
@@ -148,7 +134,6 @@ int WINAPI WinMain(
         return 1;
     }
 
-    // Создаём 100 настоящих окон
     for (int i = 0; i < WINDOW_COUNT; ++i)
     {
         int column = i % 10;
@@ -172,13 +157,10 @@ int WINAPI WinMain(
             nullptr
         );
 
-        if (hwnd != nullptr)
-        {
+        if (hwnd)
             windowsList.push_back(hwnd);
-        }
     }
 
-    // Главный цикл
     MSG msg = {};
 
     while (GetMessageW(
