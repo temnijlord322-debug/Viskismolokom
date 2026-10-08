@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cwctype>
 #include <algorithm>
+#include <iterator>
 
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Gdi32.lib")
@@ -22,7 +23,6 @@ using namespace std;
 const COLORREF EZHIK_BG = RGB(25, 27, 34);
 const COLORREF EZHIK_SIDEBAR = RGB(31, 34, 43);
 const COLORREF EZHIK_TEXT = RGB(235, 238, 245);
-const COLORREF EZHIK_GREEN = RGB(70, 190, 135);
 const COLORREF EZHIK_INPUT_BG = RGB(42, 45, 55);
 
 // =====================================================
@@ -213,7 +213,7 @@ void loadChats() {
 }
 
 // =====================================================
-// ПРОСТОЙ ИИ
+// ПОИСК КЛЮЧЕВЫХ СЛОВ
 // =====================================================
 
 wstring lowerText(wstring text) {
@@ -228,67 +228,144 @@ bool contains(const wstring& text, const wstring& word) {
     return text.find(word) != wstring::npos;
 }
 
+// =====================================================
+// ОТВЕТЫ ЁЖИК AI НА РУССКОМ
+// =====================================================
+
 wstring aiAnswer(const wstring& original) {
     wstring text = lowerText(original);
 
+    // Приветствия
     if (contains(text, L"привет") ||
         contains(text, L"здравствуй") ||
+        contains(text, L"добрый день") ||
+        contains(text, L"доброе утро") ||
+        contains(text, L"добрый вечер") ||
         contains(text, L"hello") ||
+        contains(text, L"hi") ||
+        contains(text, L"hey") ||
         contains(text, L"хай")) {
+
         return L"Привет! Я Ёжик AI. Чем могу помочь?";
     }
 
-    if (contains(text, L"как дела") ||
-        contains(text, L"как ты")) {
-        return L"У меня всё отлично! Что будем делать?";
-    }
-
+    // Знакомство
     if (contains(text, L"кто ты") ||
+        contains(text, L"ты кто") ||
         contains(text, L"твоё имя") ||
-        contains(text, L"твое имя")) {
-        return L"Я Ёжик AI — твой чат-помощник!";
+        contains(text, L"твое имя") ||
+        contains(text, L"who are you")) {
+
+        return L"Я Ёжик AI — твой русскоязычный помощник!";
     }
 
-    if (contains(text, L"смешарик")) {
-        return L"Смешарики — классный мультсериал! "
-               L"Кто твой любимый персонаж?";
+    // Настроение
+    if (contains(text, L"как дела") ||
+        contains(text, L"как ты") ||
+        contains(text, L"how are you")) {
+
+        return L"У меня всё отлично! А как твои дела?";
     }
 
-    if (contains(text, L"godot")) {
-        return L"Godot — игровой движок для создания "
-               L"2D- и 3D-игр. Начни со сцен, узлов и GDScript.";
-    }
+    // Благодарность
+    if (contains(text, L"спасибо") ||
+        contains(text, L"благодарю") ||
+        contains(text, L"thank you") ||
+        contains(text, L"thanks")) {
 
-    if (contains(text, L"спасибо")) {
         return L"Пожалуйста! Рад помочь!";
     }
 
-    if (contains(text, L"пока")) {
+    // Прощание
+    if (contains(text, L"пока") ||
+        contains(text, L"до свидания") ||
+        contains(text, L"goodbye") ||
+        contains(text, L"bye")) {
+
         return L"Пока! Возвращайся, когда захочешь пообщаться.";
     }
 
-    if (contains(text, L"помоги") ||
-        contains(text, L"помощь")) {
-        return L"Конечно! Расскажи, что случилось, "
-               L"и я попробую помочь.";
+    // Godot
+    if (contains(text, L"godot") ||
+        contains(text, L"гадот")) {
+
+        return L"Godot — игровой движок для создания 2D- и "
+               L"3D-игр. Для начала изучи сцены, узлы и GDScript.";
     }
 
+    // Смешарики
+    if (contains(text, L"смешарик")) {
+        return L"Смешарики — отличный мультсериал! "
+               L"Какой персонаж тебе нравится больше всего?";
+    }
+
+    // Игры
+    if (contains(text, L"игр") ||
+        contains(text, L"game") ||
+        contains(text, L"games")) {
+
+        return L"Игры бывают разных жанров: приключения, "
+               L"ужасы, стратегии, гонки и многое другое. "
+               L"О какой игре хочешь поговорить?";
+    }
+
+    // Программирование
+    if (contains(text, L"программ") ||
+        contains(text, L"код") ||
+        contains(text, L"c++") ||
+        contains(text, L"с++") ||
+        contains(text, L"python")) {
+
+        return L"Программирование позволяет создавать игры, "
+               L"приложения и сайты. Напиши, что именно "
+               L"ты хочешь сделать, и я постараюсь помочь.";
+    }
+
+    // Математика
     if (contains(text, L"математ") ||
-        contains(text, L"посчитай")) {
-        return L"Напиши математический пример. "
-               L"Я попробую помочь с решением.";
+        contains(text, L"посчитай") ||
+        contains(text, L"сколько будет") ||
+        contains(text, L"calculate")) {
+
+        return L"Я пока не умею надёжно решать все примеры. "
+               L"Напиши выражение, и я попробую помочь.";
     }
 
+    // Школа
     if (contains(text, L"школ") ||
         contains(text, L"домашн") ||
-        contains(text, L"урок")) {
+        contains(text, L"урок") ||
+        contains(text, L"дз")) {
+
         return L"Давай разберёмся с заданием! "
-               L"Напиши предмет и условие.";
+               L"Напиши предмет и условие задачи.";
     }
 
-    return L"Я пока не знаю точного ответа. "
+    // Помощь
+    if (contains(text, L"помоги") ||
+        contains(text, L"помощь") ||
+        contains(text, L"help")) {
+
+        return L"Конечно! Опиши свою проблему, "
+               L"и я постараюсь помочь.";
+    }
+
+    // Объяснение
+    if (contains(text, L"объясни") ||
+        contains(text, L"расскажи") ||
+        contains(text, L"что такое") ||
+        contains(text, L"почему")) {
+
+        return L"Я попробую объяснить простыми словами. "
+               L"Пока моя база знаний ограничена, поэтому "
+               L"задай вопрос конкретнее.";
+    }
+
+    // Приветствие на английском не должно приводить
+    // к английскому ответу: все ответы выше русские.
+    return L"Я пока не знаю точного ответа на этот вопрос. "
            L"Моя встроенная база знаний ограничена. "
-           L"Позже можно подключить настоящую языковую модель.";
+           L"Попробуй уточнить вопрос, и я постараюсь помочь.";
 }
 
 // =====================================================
@@ -313,6 +390,7 @@ void updateChatList() {
 
     if (currentChat >= 0 &&
         currentChat < static_cast<int>(chats.size())) {
+
         SendMessageW(
             chatList,
             LB_SETCURSEL,
@@ -335,6 +413,7 @@ void updateChatView() {
 
     if (currentChat < 0 ||
         currentChat >= static_cast<int>(chats.size())) {
+
         output = L"Добро пожаловать в Ёжик AI!\r\n\r\n"
                  L"Создай чат и напиши сообщение.";
     }
@@ -347,8 +426,10 @@ void updateChatView() {
         }
 
         for (const Message& message : chat.messages) {
-            output += message.author + L":\r\n";
-            output += message.text + L"\r\n\r\n";
+            output += message.author;
+            output += L":\r\n";
+            output += message.text;
+            output += L"\r\n\r\n";
         }
     }
 
@@ -357,8 +438,8 @@ void updateChatView() {
     SendMessageW(
         chatView,
         EM_SETSEL,
-        output.size(),
-        output.size()
+        static_cast<WPARAM>(output.size()),
+        static_cast<LPARAM>(output.size())
     );
 
     SendMessageW(chatView, EM_SCROLLCARET, 0, 0);
@@ -393,6 +474,7 @@ void newChat() {
 void deleteChat() {
     if (currentChat < 0 ||
         currentChat >= static_cast<int>(chats.size())) {
+
         MessageBoxW(
             mainWindow,
             L"Сначала выбери чат.",
@@ -405,10 +487,11 @@ void deleteChat() {
 
     if (MessageBoxW(
         mainWindow,
-        L"Удалить выбранный чат?",
+        L"Удалить выбранный чат и его переписку?",
         L"Ёжик AI",
         MB_YESNO | MB_ICONWARNING
     ) != IDYES) {
+
         return;
     }
 
@@ -443,7 +526,11 @@ void sendMessage() {
 
     wstring text(static_cast<size_t>(length) + 1, L'\0');
 
-    GetWindowTextW(inputBox, &text[0], length + 1);
+    GetWindowTextW(
+        inputBox,
+        &text[0],
+        length + 1
+    );
 
     text.resize(wcslen(text.c_str()));
 
@@ -453,6 +540,7 @@ void sendMessage() {
 
     if (currentChat < 0 ||
         currentChat >= static_cast<int>(chats.size())) {
+
         newChat();
     }
 
@@ -479,7 +567,7 @@ void sendMessage() {
 }
 
 // =====================================================
-// РАЗМЕЩЕНИЕ ИНТЕРФЕЙСА
+// РАЗМЕЩЕНИЕ ЭЛЕМЕНТОВ
 // =====================================================
 
 void layoutInterface(HWND hwnd) {
@@ -500,9 +588,14 @@ void layoutInterface(HWND hwnd) {
     );
 
     MoveWindow(
+        titleLabel,
+        14, 12, 200, 30,
+        TRUE
+    );
+
+    MoveWindow(
         chatList,
-        margin,
-        55,
+        margin, 55,
         sidebarWidth - margin * 2,
         listHeight,
         TRUE
@@ -627,7 +720,8 @@ void createInterface(HWND hwnd) {
         WS_EX_CLIENTEDGE,
         L"EDIT",
         L"",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+        ES_AUTOHSCROLL,
         0, 0, 0, 0,
         hwnd,
         reinterpret_cast<HMENU>(ID_INPUT),
@@ -745,12 +839,14 @@ LRESULT CALLBACK WindowProc(
 
         if (id == ID_CHAT_LIST &&
             notification == LBN_SELCHANGE) {
+
             int selected = static_cast<int>(
                 SendMessageW(chatList, LB_GETCURSEL, 0, 0)
             );
 
             if (selected >= 0 &&
                 selected < static_cast<int>(chats.size())) {
+
                 currentChat = selected;
                 updateChatView();
             }
