@@ -8,8 +8,10 @@
 #include <fstream>
 #include <cstdint>
 #include <cwctype>
-#include <clocale>
 #include <algorithm>
+
+#pragma comment(lib, "User32.lib")
+#pragma comment(lib, "Gdi32.lib")
 
 using namespace std;
 
@@ -17,22 +19,22 @@ using namespace std;
 // ЦВЕТА
 // =====================================================
 
-const COLORREF EZHIK_BG       = RGB(25, 27, 34);
-const COLORREF EZHIK_SIDEBAR  = RGB(31, 34, 43);
-const COLORREF EZHIK_TEXT     = RGB(235, 238, 245);
-const COLORREF EZHIK_GREEN    = RGB(70, 190, 135);
+const COLORREF EZHIK_BG = RGB(25, 27, 34);
+const COLORREF EZHIK_SIDEBAR = RGB(31, 34, 43);
+const COLORREF EZHIK_TEXT = RGB(235, 238, 245);
+const COLORREF EZHIK_GREEN = RGB(70, 190, 135);
 const COLORREF EZHIK_INPUT_BG = RGB(42, 45, 55);
 
 // =====================================================
 // ID ЭЛЕМЕНТОВ
 // =====================================================
 
-#define ID_CHAT_LIST  101
-#define ID_NEW_CHAT   102
-#define ID_DELETE     103
-#define ID_CHAT_VIEW  104
-#define ID_INPUT      105
-#define ID_SEND       106
+#define ID_CHAT_LIST 101
+#define ID_NEW_CHAT 102
+#define ID_DELETE 103
+#define ID_CHAT_VIEW 104
+#define ID_INPUT 105
+#define ID_SEND 106
 
 // =====================================================
 // СТРУКТУРЫ
@@ -56,6 +58,7 @@ HWND mainWindow = nullptr;
 HWND chatList = nullptr;
 HWND chatView = nullptr;
 HWND inputBox = nullptr;
+HWND titleLabel = nullptr;
 
 HFONT mainFont = nullptr;
 HFONT titleFont = nullptr;
@@ -67,13 +70,11 @@ HBRUSH inputBrush = nullptr;
 vector<Chat> chats;
 int currentChat = -1;
 
-// =====================================================
-// СОХРАНЕНИЕ ЧАТОВ
-// Файл создаётся автоматически.
-// Это бинарный файл, а не TXT.
-// =====================================================
-
 const wchar_t* SAVE_FILE = L"ezhik_chats.dat";
+
+// =====================================================
+// СОХРАНЕНИЕ СТРОК
+// =====================================================
 
 void writeString(ofstream& file, const wstring& text) {
     uint32_t length = static_cast<uint32_t>(
@@ -107,7 +108,6 @@ bool readString(ifstream& file, wstring& text) {
         return false;
     }
 
-    text.clear();
     text.resize(length);
 
     if (length > 0) {
@@ -122,6 +122,10 @@ bool readString(ifstream& file, wstring& text) {
     return true;
 }
 
+// =====================================================
+// СОХРАНЕНИЕ ЧАТОВ
+// =====================================================
+
 void saveChats() {
     ofstream file(SAVE_FILE, ios::binary | ios::trunc);
 
@@ -129,16 +133,16 @@ void saveChats() {
         return;
     }
 
-    uint32_t chatCount = static_cast<uint32_t>(
+    uint32_t count = static_cast<uint32_t>(
         min<size_t>(chats.size(), 1000)
     );
 
     file.write(
-        reinterpret_cast<const char*>(&chatCount),
-        sizeof(chatCount)
+        reinterpret_cast<const char*>(&count),
+        sizeof(count)
     );
 
-    for (uint32_t i = 0; i < chatCount; i++) {
+    for (uint32_t i = 0; i < count; i++) {
         writeString(file, chats[i].title);
 
         uint32_t messageCount = static_cast<uint32_t>(
@@ -164,22 +168,18 @@ void loadChats() {
         return;
     }
 
-    uint32_t chatCount = 0;
+    uint32_t count = 0;
 
     if (!file.read(
-        reinterpret_cast<char*>(&chatCount),
-        sizeof(chatCount)
-    )) {
+        reinterpret_cast<char*>(&count),
+        sizeof(count)
+    ) || count > 1000) {
         return;
     }
 
-    if (chatCount > 1000) {
-        return;
-    }
+    vector<Chat> loaded;
 
-    vector<Chat> loadedChats;
-
-    for (uint32_t i = 0; i < chatCount; i++) {
+    for (uint32_t i = 0; i < count; i++) {
         Chat chat;
 
         if (!readString(file, chat.title)) {
@@ -191,37 +191,29 @@ void loadChats() {
         if (!file.read(
             reinterpret_cast<char*>(&messageCount),
             sizeof(messageCount)
-        )) {
-            return;
-        }
-
-        if (messageCount > 10000) {
+        ) || messageCount > 10000) {
             return;
         }
 
         for (uint32_t j = 0; j < messageCount; j++) {
             Message message;
 
-            if (!readString(file, message.author)) {
-                return;
-            }
-
-            if (!readString(file, message.text)) {
+            if (!readString(file, message.author) ||
+                !readString(file, message.text)) {
                 return;
             }
 
             chat.messages.push_back(message);
         }
 
-        loadedChats.push_back(chat);
+        loaded.push_back(chat);
     }
 
-    chats = loadedChats;
+    chats = loaded;
 }
 
 // =====================================================
-// ПРОСТЫЕ ОТВЕТЫ ЁЖИК AI
-// Это пока не полноценная нейросеть.
+// ПРОСТОЙ ИИ
 // =====================================================
 
 wstring lowerText(wstring text) {
@@ -236,53 +228,35 @@ bool contains(const wstring& text, const wstring& word) {
     return text.find(word) != wstring::npos;
 }
 
-wstring aiAnswer(const wstring& originalText) {
-    wstring text = lowerText(originalText);
-
-    if (text.empty()) {
-        return L"Напиши что-нибудь, и я попробую ответить!";
-    }
+wstring aiAnswer(const wstring& original) {
+    wstring text = lowerText(original);
 
     if (contains(text, L"привет") ||
         contains(text, L"здравствуй") ||
-        contains(text, L"хай") ||
         contains(text, L"hello") ||
-        contains(text, L"hi")) {
-
+        contains(text, L"хай")) {
         return L"Привет! Я Ёжик AI. Чем могу помочь?";
     }
 
     if (contains(text, L"как дела") ||
         contains(text, L"как ты")) {
-
-        return L"Всё отлично! Готов общаться с тобой.";
+        return L"У меня всё отлично! Что будем делать?";
     }
 
     if (contains(text, L"кто ты") ||
-        contains(text, L"ты кто") ||
         contains(text, L"твоё имя") ||
         contains(text, L"твое имя")) {
-
         return L"Я Ёжик AI — твой чат-помощник!";
     }
 
     if (contains(text, L"смешарик")) {
         return L"Смешарики — классный мультсериал! "
-               L"Какой персонаж тебе нравится больше всего?";
+               L"Кто твой любимый персонаж?";
     }
 
     if (contains(text, L"godot")) {
-        return L"Godot — игровой движок. В нём можно создавать "
-               L"2D- и 3D-игры. Для начала изучи сцены, узлы "
-               L"и GDScript.";
-    }
-
-    if (contains(text, L"математ") ||
-        contains(text, L"посчитай") ||
-        contains(text, L"сколько будет")) {
-
-        return L"Я пока не умею надёжно решать все математические "
-               L"задачи. Напиши пример, и я попробую помочь.";
+        return L"Godot — игровой движок для создания "
+               L"2D- и 3D-игр. Начни со сцен, узлов и GDScript.";
     }
 
     if (contains(text, L"спасибо")) {
@@ -295,29 +269,26 @@ wstring aiAnswer(const wstring& originalText) {
 
     if (contains(text, L"помоги") ||
         contains(text, L"помощь")) {
+        return L"Конечно! Расскажи, что случилось, "
+               L"и я попробую помочь.";
+    }
 
-        return L"Конечно! Опиши, что нужно сделать, "
-               L"и я постараюсь помочь.";
+    if (contains(text, L"математ") ||
+        contains(text, L"посчитай")) {
+        return L"Напиши математический пример. "
+               L"Я попробую помочь с решением.";
     }
 
     if (contains(text, L"школ") ||
         contains(text, L"домашн") ||
         contains(text, L"урок")) {
-
-        return L"Давай разберёмся! Напиши предмет и условие задания.";
+        return L"Давай разберёмся с заданием! "
+               L"Напиши предмет и условие.";
     }
 
-    if (contains(text, L"кто такой") ||
-        contains(text, L"кто такая") ||
-        contains(text, L"расскажи про")) {
-
-        return L"Я пока знаю не всё. Уточни вопрос, "
-               L"и я попробую ответить.";
-    }
-
-    return L"Я пока не знаю точного ответа на этот вопрос. "
-           L"Моя база знаний ограничена, но мы можем "
-           L"постепенно улучшать Ёжик AI!";
+    return L"Я пока не знаю точного ответа. "
+           L"Моя встроенная база знаний ограничена. "
+           L"Позже можно подключить настоящую языковую модель.";
 }
 
 // =====================================================
@@ -342,7 +313,6 @@ void updateChatList() {
 
     if (currentChat >= 0 &&
         currentChat < static_cast<int>(chats.size())) {
-
         SendMessageW(
             chatList,
             LB_SETCURSEL,
@@ -365,9 +335,8 @@ void updateChatView() {
 
     if (currentChat < 0 ||
         currentChat >= static_cast<int>(chats.size())) {
-
         output = L"Добро пожаловать в Ёжик AI!\r\n\r\n"
-                 L"Создай чат слева и напиши своё сообщение.";
+                 L"Создай чат и напиши сообщение.";
     }
     else {
         const Chat& chat = chats[currentChat];
@@ -378,10 +347,8 @@ void updateChatView() {
         }
 
         for (const Message& message : chat.messages) {
-            output += message.author;
-            output += L":\r\n";
-            output += message.text;
-            output += L"\r\n\r\n";
+            output += message.author + L":\r\n";
+            output += message.text + L"\r\n\r\n";
         }
     }
 
@@ -390,15 +357,15 @@ void updateChatView() {
     SendMessageW(
         chatView,
         EM_SETSEL,
-        static_cast<WPARAM>(output.size()),
-        static_cast<LPARAM>(output.size())
+        output.size(),
+        output.size()
     );
 
     SendMessageW(chatView, EM_SCROLLCARET, 0, 0);
 }
 
 // =====================================================
-// СОЗДАНИЕ НОВОГО ЧАТА
+// СОЗДАНИЕ ЧАТА
 // =====================================================
 
 void newChat() {
@@ -408,14 +375,15 @@ void newChat() {
         to_wstring(chats.size() + 1);
 
     chats.push_back(chat);
-
     currentChat = static_cast<int>(chats.size()) - 1;
 
     updateChatList();
     updateChatView();
     saveChats();
 
-    SetFocus(inputBox);
+    if (inputBox) {
+        SetFocus(inputBox);
+    }
 }
 
 // =====================================================
@@ -425,7 +393,6 @@ void newChat() {
 void deleteChat() {
     if (currentChat < 0 ||
         currentChat >= static_cast<int>(chats.size())) {
-
         MessageBoxW(
             mainWindow,
             L"Сначала выбери чат.",
@@ -436,14 +403,12 @@ void deleteChat() {
         return;
     }
 
-    int result = MessageBoxW(
+    if (MessageBoxW(
         mainWindow,
-        L"Удалить выбранный чат и всю его переписку?",
-        L"Удаление чата",
+        L"Удалить выбранный чат?",
+        L"Ёжик AI",
         MB_YESNO | MB_ICONWARNING
-    );
-
-    if (result != IDYES) {
+    ) != IDYES) {
         return;
     }
 
@@ -466,10 +431,8 @@ void deleteChat() {
 // =====================================================
 
 void sendMessage() {
-    if (currentChat < 0 ||
-        currentChat >= static_cast<int>(chats.size())) {
-
-        newChat();
+    if (!inputBox) {
+        return;
     }
 
     int length = GetWindowTextLengthW(inputBox);
@@ -478,14 +441,9 @@ void sendMessage() {
         return;
     }
 
-    // Выделяем место и для завершающего нулевого символа.
     wstring text(static_cast<size_t>(length) + 1, L'\0');
 
-    GetWindowTextW(
-        inputBox,
-        &text[0],
-        length + 1
-    );
+    GetWindowTextW(inputBox, &text[0], length + 1);
 
     text.resize(wcslen(text.c_str()));
 
@@ -493,28 +451,23 @@ void sendMessage() {
         return;
     }
 
-    // Первое сообщение становится названием чата.
-    if (chats[currentChat].messages.empty()) {
-        wstring title = text;
-
-        if (title.size() > 24) {
-            title = title.substr(0, 24) + L"...";
-        }
-
-        chats[currentChat].title = title;
+    if (currentChat < 0 ||
+        currentChat >= static_cast<int>(chats.size())) {
+        newChat();
     }
 
-    Message userMessage;
-    userMessage.author = L"Вы";
-    userMessage.text = text;
+    Chat& chat = chats[currentChat];
 
-    chats[currentChat].messages.push_back(userMessage);
+    if (chat.messages.empty()) {
+        chat.title = text.substr(0, 24);
 
-    Message botMessage;
-    botMessage.author = L"Ёжик AI";
-    botMessage.text = aiAnswer(text);
+        if (text.size() > 24) {
+            chat.title += L"...";
+        }
+    }
 
-    chats[currentChat].messages.push_back(botMessage);
+    chat.messages.push_back({ L"Вы", text });
+    chat.messages.push_back({ L"Ёжик AI", aiAnswer(text) });
 
     SetWindowTextW(inputBox, L"");
 
@@ -526,7 +479,7 @@ void sendMessage() {
 }
 
 // =====================================================
-// РАЗМЕЩЕНИЕ ЭЛЕМЕНТОВ
+// РАЗМЕЩЕНИЕ ИНТЕРФЕЙСА
 // =====================================================
 
 void layoutInterface(HWND hwnd) {
@@ -541,16 +494,21 @@ void layoutInterface(HWND hwnd) {
     const int buttonHeight = 36;
     const int inputHeight = 42;
 
+    int listHeight = max(
+        100,
+        height - 55 - buttonHeight * 2 - 55
+    );
+
     MoveWindow(
         chatList,
         margin,
         55,
         sidebarWidth - margin * 2,
-        max(100, height - 55 - buttonHeight * 2 - 55),
+        listHeight,
         TRUE
     );
 
-    int listBottom = height - 55 - buttonHeight * 2;
+    int listBottom = 55 + listHeight;
 
     MoveWindow(
         GetDlgItem(hwnd, ID_NEW_CHAT),
@@ -564,7 +522,7 @@ void layoutInterface(HWND hwnd) {
     MoveWindow(
         GetDlgItem(hwnd, ID_DELETE),
         margin,
-        listBottom + 8 + buttonHeight + 8,
+        listBottom + buttonHeight + 16,
         sidebarWidth - margin * 2,
         buttonHeight,
         TRUE
@@ -590,7 +548,7 @@ void layoutInterface(HWND hwnd) {
 
     MoveWindow(
         GetDlgItem(hwnd, ID_SEND),
-        width - 95,
+        max(sidebarWidth + margin, width - 95),
         height - inputHeight - margin,
         80,
         inputHeight,
@@ -603,6 +561,18 @@ void layoutInterface(HWND hwnd) {
 // =====================================================
 
 void createInterface(HWND hwnd) {
+    titleLabel = CreateWindowExW(
+        0,
+        L"STATIC",
+        L"Ёжик AI",
+        WS_CHILD | WS_VISIBLE,
+        14, 12, 200, 30,
+        hwnd,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+
     chatList = CreateWindowExW(
         0,
         L"LISTBOX",
@@ -612,18 +582,6 @@ void createInterface(HWND hwnd) {
         0, 0, 0, 0,
         hwnd,
         reinterpret_cast<HMENU>(ID_CHAT_LIST),
-        GetModuleHandleW(nullptr),
-        nullptr
-    );
-
-    CreateWindowExW(
-        0,
-        L"STATIC",
-        L"Ёжик AI",
-        WS_CHILD | WS_VISIBLE,
-        14, 12, 200, 30,
-        hwnd,
-        nullptr,
         GetModuleHandleW(nullptr),
         nullptr
     );
@@ -656,9 +614,8 @@ void createInterface(HWND hwnd) {
         WS_EX_CLIENTEDGE,
         L"EDIT",
         L"",
-        WS_CHILD | WS_VISIBLE |
-        ES_MULTILINE | ES_AUTOVSCROLL |
-        ES_READONLY | WS_VSCROLL,
+        WS_CHILD | WS_VISIBLE | ES_MULTILINE |
+        ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
         0, 0, 0, 0,
         hwnd,
         reinterpret_cast<HMENU>(ID_CHAT_VIEW),
@@ -670,8 +627,7 @@ void createInterface(HWND hwnd) {
         WS_EX_CLIENTEDGE,
         L"EDIT",
         L"",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-        ES_AUTOHSCROLL,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         0, 0, 0, 0,
         hwnd,
         reinterpret_cast<HMENU>(ID_INPUT),
@@ -692,8 +648,7 @@ void createInterface(HWND hwnd) {
     );
 
     mainFont = CreateFontW(
-        17, 0, 0, 0,
-        FW_NORMAL,
+        17, 0, 0, 0, FW_NORMAL,
         FALSE, FALSE, FALSE,
         DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,
@@ -704,8 +659,7 @@ void createInterface(HWND hwnd) {
     );
 
     titleFont = CreateFontW(
-        22, 0, 0, 0,
-        FW_BOLD,
+        22, 0, 0, 0, FW_BOLD,
         FALSE, FALSE, FALSE,
         DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,
@@ -716,6 +670,7 @@ void createInterface(HWND hwnd) {
     );
 
     HWND controls[] = {
+        titleLabel,
         chatList,
         chatView,
         inputBox,
@@ -725,32 +680,22 @@ void createInterface(HWND hwnd) {
     };
 
     for (HWND control : controls) {
-        SendMessageW(
-            control,
-            WM_SETFONT,
-            reinterpret_cast<WPARAM>(mainFont),
-            TRUE
-        );
-    }
-
-    HWND title = GetWindow(hwnd, GW_CHILD);
-
-    while (title) {
-        wchar_t name[64] = {};
-        GetClassNameW(title, name, 64);
-
-        if (wstring(name) == L"Static") {
+        if (control) {
             SendMessageW(
-                title,
+                control,
                 WM_SETFONT,
-                reinterpret_cast<WPARAM>(titleFont),
+                reinterpret_cast<WPARAM>(mainFont),
                 TRUE
             );
-            break;
         }
-
-        title = GetWindow(title, GW_HWNDNEXT);
     }
+
+    SendMessageW(
+        titleLabel,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(titleFont),
+        TRUE
+    );
 
     layoutInterface(hwnd);
     updateChatList();
@@ -800,14 +745,12 @@ LRESULT CALLBACK WindowProc(
 
         if (id == ID_CHAT_LIST &&
             notification == LBN_SELCHANGE) {
-
             int selected = static_cast<int>(
                 SendMessageW(chatList, LB_GETCURSEL, 0, 0)
             );
 
             if (selected >= 0 &&
                 selected < static_cast<int>(chats.size())) {
-
                 currentChat = selected;
                 updateChatView();
             }
@@ -823,9 +766,8 @@ LRESULT CALLBACK WindowProc(
         HWND control = reinterpret_cast<HWND>(lParam);
 
         SetTextColor(hdc, EZHIK_TEXT);
-        SetBkMode(hdc, OPAQUE);
 
-        if (control == GetWindow(hwnd, GW_CHILD)) {
+        if (control == titleLabel) {
             SetBkColor(hdc, EZHIK_SIDEBAR);
             return reinterpret_cast<LRESULT>(sidebarBrush);
         }
@@ -877,25 +819,11 @@ LRESULT CALLBACK WindowProc(
     case WM_DESTROY:
         saveChats();
 
-        if (mainFont) {
-            DeleteObject(mainFont);
-        }
-
-        if (titleFont) {
-            DeleteObject(titleFont);
-        }
-
-        if (backgroundBrush) {
-            DeleteObject(backgroundBrush);
-        }
-
-        if (sidebarBrush) {
-            DeleteObject(sidebarBrush);
-        }
-
-        if (inputBrush) {
-            DeleteObject(inputBrush);
-        }
+        if (mainFont) DeleteObject(mainFont);
+        if (titleFont) DeleteObject(titleFont);
+        if (backgroundBrush) DeleteObject(backgroundBrush);
+        if (sidebarBrush) DeleteObject(sidebarBrush);
+        if (inputBrush) DeleteObject(inputBrush);
 
         PostQuitMessage(0);
         return 0;
@@ -905,7 +833,7 @@ LRESULT CALLBACK WindowProc(
 }
 
 // =====================================================
-// ТОЧКА ВХОДА
+// ЗАПУСК ПРОГРАММЫ
 // =====================================================
 
 int WINAPI wWinMain(
@@ -914,8 +842,6 @@ int WINAPI wWinMain(
     PWSTR,
     int showCommand
 ) {
-    setlocale(LC_ALL, "");
-
     backgroundBrush = CreateSolidBrush(EZHIK_BG);
     sidebarBrush = CreateSolidBrush(EZHIK_SIDEBAR);
     inputBrush = CreateSolidBrush(EZHIK_INPUT_BG);
