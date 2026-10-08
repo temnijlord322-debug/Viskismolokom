@@ -1,44 +1,44 @@
 #define UNICODE
 #define _UNICODE
-#define NOMINMAX
 
 #include <windows.h>
 #include <string>
 #include <vector>
 #include <fstream>
-#include <cstdint>
-#include <cwctype>
 #include <algorithm>
-#include <iterator>
+#include <cstdint>
 
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Gdi32.lib")
 
 using namespace std;
 
-// =====================================================
-// ЦВЕТА
-// =====================================================
+// Цвета интерфейса
+const COLORREF EZHIK_BG      = RGB(24, 26, 32);
+const COLORREF EZHIK_PANEL   = RGB(32, 35, 43);
+const COLORREF EZHIK_TEXT    = RGB(240, 240, 245);
+const COLORREF EZHIK_GREEN   = RGB(70, 190, 125);
+const COLORREF EZHIK_INPUT   = RGB(42, 45, 54);
 
-const COLORREF EZHIK_BG = RGB(25, 27, 34);
-const COLORREF EZHIK_SIDEBAR = RGB(31, 34, 43);
-const COLORREF EZHIK_TEXT = RGB(235, 238, 245);
-const COLORREF EZHIK_INPUT_BG = RGB(42, 45, 55);
+const int ID_CHAT_LIST = 101;
+const int ID_NEW_CHAT  = 102;
+const int ID_DEL_CHAT  = 103;
+const int ID_MESSAGES  = 104;
+const int ID_INPUT     = 105;
+const int ID_SEND      = 106;
 
-// =====================================================
-// ID ЭЛЕМЕНТОВ
-// =====================================================
+HWND mainWindow;
+HWND chatList;
+HWND messagesBox;
+HWND inputBox;
+HWND titleLabel;
 
-#define ID_CHAT_LIST 101
-#define ID_NEW_CHAT 102
-#define ID_DELETE 103
-#define ID_CHAT_VIEW 104
-#define ID_INPUT 105
-#define ID_SEND 106
+HFONT appFont;
+HFONT titleFont;
 
-// =====================================================
-// СТРУКТУРЫ
-// =====================================================
+HBRUSH backgroundBrush;
+HBRUSH panelBrush;
+HBRUSH inputBrush;
 
 struct Message {
     wstring author;
@@ -50,36 +50,39 @@ struct Chat {
     vector<Message> messages;
 };
 
-// =====================================================
-// ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-// =====================================================
-
-HWND mainWindow = nullptr;
-HWND chatList = nullptr;
-HWND chatView = nullptr;
-HWND inputBox = nullptr;
-HWND titleLabel = nullptr;
-
-HFONT mainFont = nullptr;
-HFONT titleFont = nullptr;
-
-HBRUSH backgroundBrush = nullptr;
-HBRUSH sidebarBrush = nullptr;
-HBRUSH inputBrush = nullptr;
-
 vector<Chat> chats;
 int currentChat = -1;
 
-const wchar_t* SAVE_FILE = L"ezhik_chats.dat";
+// --------------------------------------------------
+// ПРАВИЛЬНАЯ ОБРАБОТКА РУССКИХ БУКВ
+// --------------------------------------------------
 
-// =====================================================
-// СОХРАНЕНИЕ СТРОК
-// =====================================================
+wstring lowerText(wstring text) {
+    for (wchar_t& c : text) {
+        if (c >= L'A' && c <= L'Z') {
+            c = c - L'A' + L'a';
+        }
+        else if (c >= L'А' && c <= L'Я') {
+            c = c - L'А' + L'а';
+        }
+        else if (c == L'Ё') {
+            c = L'ё';
+        }
+    }
+
+    return text;
+}
+
+bool contains(const wstring& text, const wstring& part) {
+    return text.find(part) != wstring::npos;
+}
+
+// --------------------------------------------------
+// СОХРАНЕНИЕ ЧАТОВ
+// --------------------------------------------------
 
 void writeString(ofstream& file, const wstring& text) {
-    uint32_t length = static_cast<uint32_t>(
-        min<size_t>(text.size(), 100000)
-    );
+    uint32_t length = static_cast<uint32_t>(text.size());
 
     file.write(
         reinterpret_cast<const char*>(&length),
@@ -104,6 +107,7 @@ bool readString(ifstream& file, wstring& text) {
         return false;
     }
 
+    // Защита от повреждённых файлов
     if (length > 100000) {
         return false;
     }
@@ -122,47 +126,40 @@ bool readString(ifstream& file, wstring& text) {
     return true;
 }
 
-// =====================================================
-// СОХРАНЕНИЕ ЧАТОВ
-// =====================================================
-
 void saveChats() {
-    ofstream file(SAVE_FILE, ios::binary | ios::trunc);
+    ofstream file("ezhik_chats.dat", ios::binary);
 
     if (!file) {
         return;
     }
 
-    uint32_t count = static_cast<uint32_t>(
-        min<size_t>(chats.size(), 1000)
-    );
+    uint32_t count = static_cast<uint32_t>(chats.size());
 
     file.write(
         reinterpret_cast<const char*>(&count),
         sizeof(count)
     );
 
-    for (uint32_t i = 0; i < count; i++) {
-        writeString(file, chats[i].title);
+    for (const Chat& chat : chats) {
+        writeString(file, chat.title);
 
-        uint32_t messageCount = static_cast<uint32_t>(
-            min<size_t>(chats[i].messages.size(), 10000)
-        );
+        uint32_t messageCount =
+            static_cast<uint32_t>(chat.messages.size());
 
         file.write(
             reinterpret_cast<const char*>(&messageCount),
             sizeof(messageCount)
         );
 
-        for (uint32_t j = 0; j < messageCount; j++) {
-            writeString(file, chats[i].messages[j].author);
-            writeString(file, chats[i].messages[j].text);
+        for (const Message& message : chat.messages) {
+            writeString(file, message.author);
+            writeString(file, message.text);
         }
     }
 }
 
 void loadChats() {
-    ifstream file(SAVE_FILE, ios::binary);
+    ifstream file("ezhik_chats.dat", ios::binary);
 
     if (!file) {
         return;
@@ -173,11 +170,15 @@ void loadChats() {
     if (!file.read(
         reinterpret_cast<char*>(&count),
         sizeof(count)
-    ) || count > 1000) {
+    )) {
         return;
     }
 
-    vector<Chat> loaded;
+    if (count > 1000) {
+        return;
+    }
+
+    vector<Chat> loadedChats;
 
     for (uint32_t i = 0; i < count; i++) {
         Chat chat;
@@ -191,186 +192,122 @@ void loadChats() {
         if (!file.read(
             reinterpret_cast<char*>(&messageCount),
             sizeof(messageCount)
-        ) || messageCount > 10000) {
+        )) {
+            return;
+        }
+
+        if (messageCount > 10000) {
             return;
         }
 
         for (uint32_t j = 0; j < messageCount; j++) {
             Message message;
 
-            if (!readString(file, message.author) ||
-                !readString(file, message.text)) {
+            if (!readString(file, message.author)) {
+                return;
+            }
+
+            if (!readString(file, message.text)) {
                 return;
             }
 
             chat.messages.push_back(message);
         }
 
-        loaded.push_back(chat);
+        loadedChats.push_back(chat);
     }
 
-    chats = loaded;
+    chats = loadedChats;
 }
 
-// =====================================================
-// ПОИСК КЛЮЧЕВЫХ СЛОВ
-// =====================================================
+// --------------------------------------------------
+// ОТВЕТЫ ЁЖИКА
+// --------------------------------------------------
 
-wstring lowerText(wstring text) {
-    for (wchar_t& c : text) {
-        c = towlower(c);
+wstring aiAnswer(const wstring& originalText) {
+    wstring text = lowerText(originalText);
+
+    if (text.empty()) {
+        return L"Напиши сообщение, и я постараюсь ответить!";
     }
 
-    return text;
-}
-
-bool contains(const wstring& text, const wstring& word) {
-    return text.find(word) != wstring::npos;
-}
-
-// =====================================================
-// ОТВЕТЫ ЁЖИК AI НА РУССКОМ
-// =====================================================
-
-wstring aiAnswer(const wstring& original) {
-    wstring text = lowerText(original);
-
-    // Приветствия
     if (contains(text, L"привет") ||
         contains(text, L"здравствуй") ||
-        contains(text, L"добрый день") ||
-        contains(text, L"доброе утро") ||
-        contains(text, L"добрый вечер") ||
+        contains(text, L"хай") ||
         contains(text, L"hello") ||
-        contains(text, L"hi") ||
-        contains(text, L"hey") ||
-        contains(text, L"хай")) {
+        contains(text, L"hi")) {
 
         return L"Привет! Я Ёжик AI. Чем могу помочь?";
     }
 
-    // Знакомство
-    if (contains(text, L"кто ты") ||
-        contains(text, L"ты кто") ||
-        contains(text, L"твоё имя") ||
-        contains(text, L"твое имя") ||
-        contains(text, L"who are you")) {
-
-        return L"Я Ёжик AI — твой русскоязычный помощник!";
-    }
-
-    // Настроение
     if (contains(text, L"как дела") ||
-        contains(text, L"как ты") ||
-        contains(text, L"how are you")) {
+        contains(text, L"как ты")) {
 
-        return L"У меня всё отлично! А как твои дела?";
+        return L"Всё хорошо! Спасибо, что спросил. А у тебя как дела?";
     }
 
-    // Благодарность
-    if (contains(text, L"спасибо") ||
-        contains(text, L"благодарю") ||
-        contains(text, L"thank you") ||
-        contains(text, L"thanks")) {
+    if (contains(text, L"как тебя зовут") ||
+        contains(text, L"кто ты")) {
 
-        return L"Пожалуйста! Рад помочь!";
+        return L"Я Ёжик AI — небольшой чат-помощник.";
     }
 
-    // Прощание
-    if (contains(text, L"пока") ||
-        contains(text, L"до свидания") ||
-        contains(text, L"goodbye") ||
-        contains(text, L"bye")) {
-
-        return L"Пока! Возвращайся, когда захочешь пообщаться.";
+    if (contains(text, L"спасибо")) {
+        return L"Пожалуйста! Рад помочь.";
     }
 
-    // Godot
+    if (contains(text, L"пока")) {
+        return L"Пока! Возвращайся, когда понадоблюсь.";
+    }
+
     if (contains(text, L"godot") ||
         contains(text, L"гадот")) {
 
-        return L"Godot — игровой движок для создания 2D- и "
-               L"3D-игр. Для начала изучи сцены, узлы и GDScript.";
+        return L"Godot — игровой движок. На нём можно создавать "
+               L"2D- и 3D-игры. Для начала изучи сцены, узлы "
+               L"и основы GDScript.";
     }
 
-    // Смешарики
-    if (contains(text, L"смешарик")) {
-        return L"Смешарики — отличный мультсериал! "
-               L"Какой персонаж тебе нравится больше всего?";
+    if (contains(text, L"c++") ||
+        contains(text, L"си++") ||
+        contains(text, L"программирован")) {
+
+        return L"C++ — язык программирования. Начни с переменных, "
+               L"условий if, циклов и функций.";
     }
 
-    // Игры
-    if (contains(text, L"игр") ||
-        contains(text, L"game") ||
-        contains(text, L"games")) {
+    if (contains(text, L"компьютер") ||
+        contains(text, L"windows")) {
 
-        return L"Игры бывают разных жанров: приключения, "
-               L"ужасы, стратегии, гонки и многое другое. "
-               L"О какой игре хочешь поговорить?";
+        return L"Могу помочь с вопросами о компьютерах и Windows. "
+               L"Напиши, что именно хочешь узнать.";
     }
 
-    // Программирование
-    if (contains(text, L"программ") ||
-        contains(text, L"код") ||
-        contains(text, L"c++") ||
-        contains(text, L"с++") ||
-        contains(text, L"python")) {
-
-        return L"Программирование позволяет создавать игры, "
-               L"приложения и сайты. Напиши, что именно "
-               L"ты хочешь сделать, и я постараюсь помочь.";
-    }
-
-    // Математика
-    if (contains(text, L"математ") ||
-        contains(text, L"посчитай") ||
-        contains(text, L"сколько будет") ||
-        contains(text, L"calculate")) {
-
-        return L"Я пока не умею надёжно решать все примеры. "
-               L"Напиши выражение, и я попробую помочь.";
-    }
-
-    // Школа
-    if (contains(text, L"школ") ||
-        contains(text, L"домашн") ||
-        contains(text, L"урок") ||
-        contains(text, L"дз")) {
-
-        return L"Давай разберёмся с заданием! "
-               L"Напиши предмет и условие задачи.";
-    }
-
-    // Помощь
-    if (contains(text, L"помоги") ||
-        contains(text, L"помощь") ||
-        contains(text, L"help")) {
-
-        return L"Конечно! Опиши свою проблему, "
-               L"и я постараюсь помочь.";
-    }
-
-    // Объяснение
-    if (contains(text, L"объясни") ||
+    if (contains(text, L"что такое") ||
+        contains(text, L"объясни") ||
         contains(text, L"расскажи") ||
-        contains(text, L"что такое") ||
-        contains(text, L"почему")) {
+        contains(text, L"почему") ||
+        contains(text, L"как сделать")) {
 
-        return L"Я попробую объяснить простыми словами. "
-               L"Пока моя база знаний ограничена, поэтому "
-               L"задай вопрос конкретнее.";
+        return L"Я пока умею отвечать только на некоторые вопросы. "
+               L"Попробуй сформулировать вопрос по-другому.";
     }
 
-    // Приветствие на английском не должно приводить
-    // к английскому ответу: все ответы выше русские.
-    return L"Я пока не знаю точного ответа на этот вопрос. "
-           L"Моя встроенная база знаний ограничена. "
-           L"Попробуй уточнить вопрос, и я постараюсь помочь.";
+    if (contains(text, L"кто создал") ||
+        contains(text, L"кто тебя сделал")) {
+
+        return L"Меня создали как учебный проект на C++. "
+               L"Пока мои ответы основаны на простых правилах.";
+    }
+
+    return L"Я прочитал твоё сообщение, но пока не знаю, "
+           L"как правильно ответить. Я ещё простой помощник, "
+           L"а не полноценная нейросеть.";
 }
 
-// =====================================================
-// ОБНОВЛЕНИЕ СПИСКА ЧАТОВ
-// =====================================================
+// --------------------------------------------------
+// ОБНОВЛЕНИЕ ОКНА СООБЩЕНИЙ
+// --------------------------------------------------
 
 void updateChatList() {
     if (!chatList) {
@@ -400,12 +337,8 @@ void updateChatList() {
     }
 }
 
-// =====================================================
-// ОБНОВЛЕНИЕ ПЕРЕПИСКИ
-// =====================================================
-
 void updateChatView() {
-    if (!chatView) {
+    if (!messagesBox) {
         return;
     }
 
@@ -414,16 +347,13 @@ void updateChatView() {
     if (currentChat < 0 ||
         currentChat >= static_cast<int>(chats.size())) {
 
-        output = L"Добро пожаловать в Ёжик AI!\r\n\r\n"
-                 L"Создай чат и напиши сообщение.";
+        output =
+            L"Добро пожаловать в Ёжик AI!\r\n\r\n"
+            L"Создай чат и напиши первое сообщение.\r\n"
+            L"Я пока простой помощник с заранее заданными ответами.";
     }
     else {
         const Chat& chat = chats[currentChat];
-
-        if (chat.messages.empty()) {
-            output = L"Ёжик AI\r\n\r\n"
-                     L"Привет! Напиши первое сообщение.";
-        }
 
         for (const Message& message : chat.messages) {
             output += message.author;
@@ -431,67 +361,54 @@ void updateChatView() {
             output += message.text;
             output += L"\r\n\r\n";
         }
+
+        if (chat.messages.empty()) {
+            output =
+                L"Это новый чат!\r\n\r\n"
+                L"Напиши сообщение внизу окна.";
+        }
     }
 
-    SetWindowTextW(chatView, output.c_str());
+    SetWindowTextW(messagesBox, output.c_str());
 
     SendMessageW(
-        chatView,
+        messagesBox,
         EM_SETSEL,
-        static_cast<WPARAM>(output.size()),
-        static_cast<LPARAM>(output.size())
+        static_cast<WPARAM>(-1),
+        static_cast<LPARAM>(-1)
     );
 
-    SendMessageW(chatView, EM_SCROLLCARET, 0, 0);
+    SendMessageW(
+        messagesBox,
+        EM_SCROLLCARET,
+        0,
+        0
+    );
 }
 
-// =====================================================
-// СОЗДАНИЕ ЧАТА
-// =====================================================
+// --------------------------------------------------
+// СОЗДАНИЕ И УДАЛЕНИЕ ЧАТОВ
+// --------------------------------------------------
 
 void newChat() {
     Chat chat;
 
-    chat.title = L"Новый чат " +
-        to_wstring(chats.size() + 1);
+    chat.title = L"Новый чат";
 
     chats.push_back(chat);
+
     currentChat = static_cast<int>(chats.size()) - 1;
 
     updateChatList();
     updateChatView();
     saveChats();
 
-    if (inputBox) {
-        SetFocus(inputBox);
-    }
+    SetFocus(inputBox);
 }
-
-// =====================================================
-// УДАЛЕНИЕ ЧАТА
-// =====================================================
 
 void deleteChat() {
     if (currentChat < 0 ||
         currentChat >= static_cast<int>(chats.size())) {
-
-        MessageBoxW(
-            mainWindow,
-            L"Сначала выбери чат.",
-            L"Ёжик AI",
-            MB_OK | MB_ICONINFORMATION
-        );
-
-        return;
-    }
-
-    if (MessageBoxW(
-        mainWindow,
-        L"Удалить выбранный чат и его переписку?",
-        L"Ёжик AI",
-        MB_YESNO | MB_ICONWARNING
-    ) != IDYES) {
-
         return;
     }
 
@@ -509,13 +426,15 @@ void deleteChat() {
     saveChats();
 }
 
-// =====================================================
+// --------------------------------------------------
 // ОТПРАВКА СООБЩЕНИЯ
-// =====================================================
+// --------------------------------------------------
 
 void sendMessage() {
-    if (!inputBox) {
-        return;
+    if (currentChat < 0 ||
+        currentChat >= static_cast<int>(chats.size())) {
+
+        newChat();
     }
 
     int length = GetWindowTextLengthW(inputBox);
@@ -524,265 +443,169 @@ void sendMessage() {
         return;
     }
 
-    wstring text(static_cast<size_t>(length) + 1, L'\0');
+    vector<wchar_t> buffer(length + 1, L'\0');
 
     GetWindowTextW(
         inputBox,
-        &text[0],
+        buffer.data(),
         length + 1
     );
 
-    text.resize(wcslen(text.c_str()));
+    wstring text(buffer.data());
 
     if (text.empty()) {
         return;
     }
 
-    if (currentChat < 0 ||
-        currentChat >= static_cast<int>(chats.size())) {
-
-        newChat();
-    }
-
     Chat& chat = chats[currentChat];
 
     if (chat.messages.empty()) {
-        chat.title = text.substr(0, 24);
+        chat.title = text;
 
-        if (text.size() > 24) {
-            chat.title += L"...";
+        if (chat.title.size() > 25) {
+            chat.title = chat.title.substr(0, 25) + L"...";
         }
     }
 
-    chat.messages.push_back({ L"Вы", text });
-    chat.messages.push_back({ L"Ёжик AI", aiAnswer(text) });
+    chat.messages.push_back({L"Ты", text});
+
+    wstring answer = aiAnswer(text);
+
+    chat.messages.push_back({L"Ёжик AI", answer});
 
     SetWindowTextW(inputBox, L"");
 
     updateChatList();
     updateChatView();
+
     saveChats();
 
     SetFocus(inputBox);
 }
 
-// =====================================================
-// РАЗМЕЩЕНИЕ ЭЛЕМЕНТОВ
-// =====================================================
+// --------------------------------------------------
+// ИЗМЕНЕНИЕ РАЗМЕРА ЭЛЕМЕНТОВ
+// --------------------------------------------------
 
 void layoutInterface(HWND hwnd) {
     RECT rect;
     GetClientRect(hwnd, &rect);
 
-    int width = rect.right;
-    int height = rect.bottom;
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
 
-    const int sidebarWidth = 225;
-    const int margin = 12;
-    const int buttonHeight = 36;
-    const int inputHeight = 42;
-
-    int listHeight = max(
-        100,
-        height - 55 - buttonHeight * 2 - 55
-    );
+    const int sidebarWidth = 220;
+    const int margin = 14;
+    const int inputHeight = 38;
+    const int buttonWidth = 90;
 
     MoveWindow(
         titleLabel,
-        14, 12, 200, 30,
+        margin,
+        12,
+        sidebarWidth - margin * 2,
+        35,
         TRUE
     );
 
     MoveWindow(
         chatList,
-        margin, 55,
-        sidebarWidth - margin * 2,
-        listHeight,
+        10,
+        55,
+        sidebarWidth - 20,
+        max(50, height - 145),
         TRUE
     );
-
-    int listBottom = 55 + listHeight;
 
     MoveWindow(
         GetDlgItem(hwnd, ID_NEW_CHAT),
-        margin,
-        listBottom + 8,
-        sidebarWidth - margin * 2,
-        buttonHeight,
+        10,
+        height - 80,
+        (sidebarWidth - 25) / 2,
+        35,
         TRUE
     );
 
     MoveWindow(
-        GetDlgItem(hwnd, ID_DELETE),
-        margin,
-        listBottom + buttonHeight + 16,
-        sidebarWidth - margin * 2,
-        buttonHeight,
+        GetDlgItem(hwnd, ID_DEL_CHAT),
+        15 + (sidebarWidth - 25) / 2,
+        height - 80,
+        (sidebarWidth - 25) / 2,
+        35,
         TRUE
     );
 
     MoveWindow(
-        chatView,
+        messagesBox,
         sidebarWidth + margin,
-        48,
+        15,
         max(100, width - sidebarWidth - margin * 2),
-        max(100, height - inputHeight - 75),
+        max(100, height - inputHeight - 45),
         TRUE
     );
 
     MoveWindow(
         inputBox,
         sidebarWidth + margin,
-        height - inputHeight - margin,
-        max(100, width - sidebarWidth - 120),
+        height - inputHeight - 12,
+        max(100, width - sidebarWidth - margin * 3 - buttonWidth),
         inputHeight,
         TRUE
     );
 
     MoveWindow(
         GetDlgItem(hwnd, ID_SEND),
-        max(sidebarWidth + margin, width - 95),
-        height - inputHeight - margin,
-        80,
+        width - buttonWidth - margin,
+        height - inputHeight - 12,
+        buttonWidth,
         inputHeight,
         TRUE
     );
 }
 
-// =====================================================
+// --------------------------------------------------
 // СОЗДАНИЕ ИНТЕРФЕЙСА
-// =====================================================
+// --------------------------------------------------
+
+HWND createControl(
+    HWND parent,
+    const wchar_t* className,
+    const wchar_t* text,
+    DWORD style,
+    int id
+) {
+    HWND control = CreateWindowExW(
+        0,
+        className,
+        text,
+        WS_CHILD | WS_VISIBLE | style,
+        0, 0, 100, 30,
+        parent,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+
+    if (control && appFont) {
+        SendMessageW(
+            control,
+            WM_SETFONT,
+            reinterpret_cast<WPARAM>(appFont),
+            TRUE
+        );
+    }
+
+    return control;
+}
 
 void createInterface(HWND hwnd) {
-    titleLabel = CreateWindowExW(
-        0,
+    titleLabel = createControl(
+        hwnd,
         L"STATIC",
         L"Ёжик AI",
-        WS_CHILD | WS_VISIBLE,
-        14, 12, 200, 30,
-        hwnd,
-        nullptr,
-        GetModuleHandleW(nullptr),
-        nullptr
+        SS_LEFT,
+        110
     );
-
-    chatList = CreateWindowExW(
-        0,
-        L"LISTBOX",
-        nullptr,
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL |
-        LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-        0, 0, 0, 0,
-        hwnd,
-        reinterpret_cast<HMENU>(ID_CHAT_LIST),
-        GetModuleHandleW(nullptr),
-        nullptr
-    );
-
-    CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"+ Новый чат",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, 0, 0, 0,
-        hwnd,
-        reinterpret_cast<HMENU>(ID_NEW_CHAT),
-        GetModuleHandleW(nullptr),
-        nullptr
-    );
-
-    CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Удалить чат",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, 0, 0, 0,
-        hwnd,
-        reinterpret_cast<HMENU>(ID_DELETE),
-        GetModuleHandleW(nullptr),
-        nullptr
-    );
-
-    chatView = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        L"",
-        WS_CHILD | WS_VISIBLE | ES_MULTILINE |
-        ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
-        0, 0, 0, 0,
-        hwnd,
-        reinterpret_cast<HMENU>(ID_CHAT_VIEW),
-        GetModuleHandleW(nullptr),
-        nullptr
-    );
-
-    inputBox = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        L"",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-        ES_AUTOHSCROLL,
-        0, 0, 0, 0,
-        hwnd,
-        reinterpret_cast<HMENU>(ID_INPUT),
-        GetModuleHandleW(nullptr),
-        nullptr
-    );
-
-    CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"Отправить",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        0, 0, 0, 0,
-        hwnd,
-        reinterpret_cast<HMENU>(ID_SEND),
-        GetModuleHandleW(nullptr),
-        nullptr
-    );
-
-    mainFont = CreateFontW(
-        17, 0, 0, 0, FW_NORMAL,
-        FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        L"Segoe UI"
-    );
-
-    titleFont = CreateFontW(
-        22, 0, 0, 0, FW_BOLD,
-        FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        L"Segoe UI"
-    );
-
-    HWND controls[] = {
-        titleLabel,
-        chatList,
-        chatView,
-        inputBox,
-        GetDlgItem(hwnd, ID_NEW_CHAT),
-        GetDlgItem(hwnd, ID_DELETE),
-        GetDlgItem(hwnd, ID_SEND)
-    };
-
-    for (HWND control : controls) {
-        if (control) {
-            SendMessageW(
-                control,
-                WM_SETFONT,
-                reinterpret_cast<WPARAM>(mainFont),
-                TRUE
-            );
-        }
-    }
 
     SendMessageW(
         titleLabel,
@@ -791,55 +614,102 @@ void createInterface(HWND hwnd) {
         TRUE
     );
 
-    layoutInterface(hwnd);
+    chatList = createControl(
+        hwnd,
+        L"LISTBOX",
+        L"",
+        LBS_NOTIFY | WS_VSCROLL | LBS_NOINTEGRALHEIGHT,
+        ID_CHAT_LIST
+    );
+
+    messagesBox = createControl(
+        hwnd,
+        L"EDIT",
+        L"",
+        ES_MULTILINE |
+        ES_AUTOVSCROLL |
+        ES_READONLY |
+        WS_VSCROLL,
+        ID_MESSAGES
+    );
+
+    inputBox = createControl(
+        hwnd,
+        L"EDIT",
+        L"",
+        ES_AUTOHSCROLL,
+        ID_INPUT
+    );
+
+    createControl(
+        hwnd,
+        L"BUTTON",
+        L"+ Чат",
+        BS_PUSHBUTTON,
+        ID_NEW_CHAT
+    );
+
+    createControl(
+        hwnd,
+        L"BUTTON",
+        L"Удалить",
+        BS_PUSHBUTTON,
+        ID_DEL_CHAT
+    );
+
+    createControl(
+        hwnd,
+        L"BUTTON",
+        L"Отправить",
+        BS_DEFPUSHBUTTON,
+        ID_SEND
+    );
+
     updateChatList();
     updateChatView();
+
+    layoutInterface(hwnd);
 }
 
-// =====================================================
-// ОБРАБОТЧИК ОКНА
-// =====================================================
+// --------------------------------------------------
+// ОБРАБОТКА СОБЫТИЙ ОКНА
+// --------------------------------------------------
 
 LRESULT CALLBACK WindowProc(
     HWND hwnd,
-    UINT message,
+    UINT msg,
     WPARAM wParam,
     LPARAM lParam
 ) {
-    switch (message) {
-
+    switch (msg) {
     case WM_CREATE:
         createInterface(hwnd);
         return 0;
 
     case WM_SIZE:
-        if (chatList) {
-            layoutInterface(hwnd);
-        }
+        layoutInterface(hwnd);
         return 0;
 
     case WM_COMMAND: {
         int id = LOWORD(wParam);
         int notification = HIWORD(wParam);
 
-        if (id == ID_NEW_CHAT) {
-            newChat();
-            return 0;
-        }
-
-        if (id == ID_DELETE) {
-            deleteChat();
-            return 0;
-        }
-
-        if (id == ID_SEND) {
+        if (id == ID_SEND && notification == BN_CLICKED) {
             sendMessage();
             return 0;
         }
 
-        if (id == ID_CHAT_LIST &&
-            notification == LBN_SELCHANGE) {
+        if (id == ID_NEW_CHAT && notification == BN_CLICKED) {
+            newChat();
+            return 0;
+        }
 
+        if (id == ID_DEL_CHAT && notification == BN_CLICKED) {
+            deleteChat();
+            return 0;
+        }
+
+        if (id == ID_CHAT_LIST && notification == LBN_SELCHANGE) {
             int selected = static_cast<int>(
                 SendMessageW(chatList, LB_GETCURSEL, 0, 0)
             );
@@ -854,60 +724,53 @@ LRESULT CALLBACK WindowProc(
             return 0;
         }
 
+        if (id == ID_INPUT && notification == EN_MAXTEXT) {
+            return 0;
+        }
+
         break;
     }
 
-    case WM_CTLCOLORSTATIC: {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
         HWND control = reinterpret_cast<HWND>(lParam);
-
-        SetTextColor(hdc, EZHIK_TEXT);
 
         if (control == titleLabel) {
-            SetBkColor(hdc, EZHIK_SIDEBAR);
-            return reinterpret_cast<LRESULT>(sidebarBrush);
+            SetTextColor(dc, EZHIK_GREEN);
+            SetBkColor(dc, EZHIK_PANEL);
+            return reinterpret_cast<LRESULT>(panelBrush);
         }
 
-        SetBkColor(hdc, EZHIK_BG);
-        return reinterpret_cast<LRESULT>(backgroundBrush);
-    }
-
-    case WM_CTLCOLOREDIT: {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-        HWND control = reinterpret_cast<HWND>(lParam);
-
-        SetTextColor(hdc, EZHIK_TEXT);
-
-        if (control == inputBox) {
-            SetBkColor(hdc, EZHIK_INPUT_BG);
+        if (control == inputBox || control == messagesBox) {
+            SetTextColor(dc, EZHIK_TEXT);
+            SetBkColor(dc, EZHIK_INPUT);
             return reinterpret_cast<LRESULT>(inputBrush);
         }
 
-        SetBkColor(hdc, EZHIK_BG);
-        return reinterpret_cast<LRESULT>(backgroundBrush);
-    }
+        SetTextColor(dc, EZHIK_TEXT);
+        SetBkColor(dc, EZHIK_PANEL);
 
-    case WM_CTLCOLORLISTBOX: {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
-
-        SetTextColor(hdc, EZHIK_TEXT);
-        SetBkColor(hdc, EZHIK_SIDEBAR);
-
-        return reinterpret_cast<LRESULT>(sidebarBrush);
+        return reinterpret_cast<LRESULT>(panelBrush);
     }
 
     case WM_ERASEBKGND: {
-        HDC hdc = reinterpret_cast<HDC>(wParam);
+        HDC dc = reinterpret_cast<HDC>(wParam);
 
         RECT rect;
         GetClientRect(hwnd, &rect);
 
-        FillRect(hdc, &rect, backgroundBrush);
+        FillRect(dc, &rect, backgroundBrush);
 
-        RECT sidebar = rect;
-        sidebar.right = 225;
+        RECT sidebar = {
+            0,
+            0,
+            220,
+            rect.bottom
+        };
 
-        FillRect(hdc, &sidebar, sidebarBrush);
+        FillRect(dc, &sidebar, panelBrush);
 
         return 1;
     }
@@ -915,22 +778,23 @@ LRESULT CALLBACK WindowProc(
     case WM_DESTROY:
         saveChats();
 
-        if (mainFont) DeleteObject(mainFont);
+        if (appFont) DeleteObject(appFont);
         if (titleFont) DeleteObject(titleFont);
+
         if (backgroundBrush) DeleteObject(backgroundBrush);
-        if (sidebarBrush) DeleteObject(sidebarBrush);
+        if (panelBrush) DeleteObject(panelBrush);
         if (inputBrush) DeleteObject(inputBrush);
 
         PostQuitMessage(0);
         return 0;
     }
 
-    return DefWindowProcW(hwnd, message, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-// =====================================================
+// --------------------------------------------------
 // ЗАПУСК ПРОГРАММЫ
-// =====================================================
+// --------------------------------------------------
 
 int WINAPI wWinMain(
     HINSTANCE instance,
@@ -939,16 +803,49 @@ int WINAPI wWinMain(
     int showCommand
 ) {
     backgroundBrush = CreateSolidBrush(EZHIK_BG);
-    sidebarBrush = CreateSolidBrush(EZHIK_SIDEBAR);
-    inputBrush = CreateSolidBrush(EZHIK_INPUT_BG);
+    panelBrush = CreateSolidBrush(EZHIK_PANEL);
+    inputBrush = CreateSolidBrush(EZHIK_INPUT);
+
+    appFont = CreateFontW(
+        18, 0, 0, 0,
+        FW_NORMAL,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe UI"
+    );
+
+    titleFont = CreateFontW(
+        25, 0, 0, 0,
+        FW_BOLD,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe UI"
+    );
 
     loadChats();
 
-    WNDCLASSW wc = {};
+    if (chats.empty()) {
+        Chat firstChat;
+        firstChat.title = L"Первый чат";
+        chats.push_back(firstChat);
+    }
 
+    currentChat = 0;
+
+    const wchar_t CLASS_NAME[] = L"EzhikAIWindow";
+
+    WNDCLASSW wc = {};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = instance;
-    wc.lpszClassName = L"EzhikAIWindow";
+    wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = backgroundBrush;
 
@@ -956,7 +853,7 @@ int WINAPI wWinMain(
         MessageBoxW(
             nullptr,
             L"Не удалось зарегистрировать окно.",
-            L"Ёжик AI",
+            L"Ошибка",
             MB_OK | MB_ICONERROR
         );
 
@@ -965,13 +862,13 @@ int WINAPI wWinMain(
 
     mainWindow = CreateWindowExW(
         0,
-        L"EzhikAIWindow",
+        CLASS_NAME,
         L"Ёжик AI",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         1000,
-        700,
+        650,
         nullptr,
         nullptr,
         instance,
@@ -982,23 +879,15 @@ int WINAPI wWinMain(
         MessageBoxW(
             nullptr,
             L"Не удалось создать окно программы.",
-            L"Ёжик AI",
+            L"Ошибка",
             MB_OK | MB_ICONERROR
         );
-
-        DeleteObject(backgroundBrush);
-        DeleteObject(sidebarBrush);
-        DeleteObject(inputBrush);
 
         return 1;
     }
 
     ShowWindow(mainWindow, showCommand);
     UpdateWindow(mainWindow);
-
-    if (chats.empty()) {
-        newChat();
-    }
 
     MSG msg = {};
 
