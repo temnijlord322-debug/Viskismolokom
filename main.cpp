@@ -1,248 +1,860 @@
-// Ёжик — чат-бот на C++17 (русский + английский, калькулятор, смайлики, исправление опечаток)
-// Сборка: g++ -std=c++17 -O2 yozhik.cpp -o yozhik   Запуск: ./yozhik
-#include <bits/stdc++.h>
+#define UNICODE
+#define _UNICODE
+
+#include <windows.h>
+#include <commctrl.h>
+
+#include <string>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+
+#pragma comment(lib, "Comctl32.lib")
+
 using namespace std;
-typedef u32string U;
 
-// ---------- UTF-8 и нормализация ----------
-U dec(const string& s) {
-    U r;
-    for (size_t i = 0; i < s.size();) {
-        unsigned char c = s[i];
-        char32_t cp; int n;
-        if (c < 0x80) { cp = c; n = 1; }
-        else if ((c >> 5) == 6) { cp = c & 31; n = 2; }
-        else if ((c >> 4) == 14) { cp = c & 15; n = 3; }
-        else { cp = c & 7; n = 4; }
-        for (int k = 1; k < n && i + k < s.size(); k++) cp = (cp << 6) | (s[i + k] & 63);
-        r += cp; i += n;
-    }
-    return r;
-}
-char32_t low(char32_t c) {
-    if (c >= 0x410 && c <= 0x42F) return c + 32;
-    if (c == 0x401 || c == 0x451) return 0x435;           // Ё/ё -> е
-    if (c < 128) return tolower((int)c);
-    return c;
-}
-bool isWordCh(char32_t c) { return (c < 128 && isalnum((int)c)) || (c >= 0x430 && c <= 0x44F); }
-bool isCyr(char32_t c) { return c >= 0x430 && c <= 0x44F; }
+// =====================================================
+// ЁЖИК AI — Desktop Chat
+// Windows / C++17 / Win32 API
+// =====================================================
 
-vector<U> tokens(const string& s) {
-    vector<U> t; U cur;
-    for (char32_t c : dec(s)) {
-        c = low(c);
-        if (isWordCh(c)) cur += c;
-        else if (!cur.empty()) { t.push_back(cur); cur.clear(); }
-    }
-    if (!cur.empty()) t.push_back(cur);
-    return t;
-}
-size_t lev(const U& a, const U& b) {
-    vector<size_t> p(b.size() + 1), q(b.size() + 1);
-    iota(p.begin(), p.end(), 0);
-    for (size_t i = 1; i <= a.size(); i++) {
-        q[0] = i;
-        for (size_t j = 1; j <= b.size(); j++)
-            q[j] = min({p[j] + 1, q[j - 1] + 1, p[j - 1] + (a[i - 1] != b[j - 1])});
-        swap(p, q);
-    }
-    return p[b.size()];
-}
-// слово w «похоже» на ключ k (учитываем окончания и опечатки)
-bool like(const U& w, const U& k) {
-    if (k.size() < 4) return w == k;
-    if (w.size() + 1 < k.size()) return false;
-    U pre = w.substr(0, min(w.size(), k.size()));
-    return lev(pre, k) <= (k.size() >= 7 ? 2u : 1u);
-}
-
-// ---------- Калькулятор ----------
-struct Calc {
-    string s; size_t i = 0; bool ok = true, hasOp = false;
-    void ws() { while (i < s.size() && s[i] == ' ') i++; }
-    double expr() {
-        double v = term();
-        for (ws(); i < s.size() && (s[i] == '+' || s[i] == '-'); ws()) {
-            char o = s[i++]; hasOp = true; double r = term(); v = (o == '+') ? v + r : v - r;
-        }
-        return v;
-    }
-    double term() {
-        double v = pw();
-        for (ws(); i < s.size() && (s[i] == '*' || s[i] == '/'); ws()) {
-            char o = s[i++]; hasOp = true; double r = pw();
-            if (o == '/' && r == 0) { ok = false; return 0; }
-            v = (o == '*') ? v * r : v / r;
-        }
-        return v;
-    }
-    double pw() {
-        double b = un(); ws();
-        if (i < s.size() && s[i] == '^') { i++; hasOp = true; return pow(b, pw()); }
-        return b;
-    }
-    double un() {
-        ws();
-        if (i < s.size() && s[i] == '-') { i++; return -un(); }
-        if (i < s.size() && s[i] == '(') {
-            i++; double v = expr(); ws();
-            if (i < s.size() && s[i] == ')') i++; else ok = false;
-            return v;
-        }
-        size_t st = i;
-        while (i < s.size() && (isdigit((unsigned char)s[i]) || s[i] == '.')) i++;
-        if (st == i) { ok = false; return 0; }
-        return atof(s.substr(st, i - st).c_str());
-    }
+struct Message
+{
+    wstring author;
+    wstring text;
 };
-bool tryCalc(const string& in, string& out) {
-    string f;
-    for (char c : in) {
-        if (c == ',') c = '.';
-        if (strchr("0123456789+-*/^().", c)) f += c;
-        else if (c == ' ') f += ' ';
-    }
-    // × и ÷
-    if (in.find("\xC3\x97") != string::npos) { for (auto& c : f) (void)c; }
-    Calc k; k.s = f;
-    double v = k.expr(); k.ws();
-    if (!k.ok || !k.hasOp || k.i != k.s.size()) return false;
-    ostringstream o;
-    if (fabs(v - llround(v)) < 1e-9 && fabs(v) < 1e15) o << llround(v);
-    else o << setprecision(10) << v;
-    out = o.str();
-    return true;
-}
 
-// ---------- База знаний ----------
-struct Entry { vector<U> keys; string ru, en; };
-vector<Entry> kb;
-void add(initializer_list<const char*> k, string ru, string en = "") {
-    Entry e; for (auto x : k) e.keys.push_back(tokens(x)[0]);
-    e.ru = ru; e.en = en.empty() ? ru : en; kb.push_back(e);
-}
-void initKB() {
-    add({"привет", "здравств", "хай", "hello", "hi", "hey"},
-        "Привет! Я Ёжик 🦔 Спрашивай что угодно!", "Hi! I'm Yozhik the hedgehog 🦔 Ask me anything!");
-    add({"смешарик", "smeshariki", "ежик", "нюша", "крош", "лосяш", "бараш", "копатыч", "совунья", "пин"},
-        "Смешарики — мой любимый мультик! 🥰 Это дружная компания круглых героев: Крош, Ёжик, Нюша, Бараш, "
-        "Лосяш, Совунья, Копатыч и Пин. Они живут на Круглой поляне, дружат, ссорятся, мирятся и учатся "
-        "понимать друг друга. Ёжик — самый добрый и мечтательный, а я назван в его честь 🦔💚",
-        "Smeshariki is my favorite cartoon! 🥰 Round friends (Krosh, Hedgehog, Nyusha, Barash, Losyash, "
-        "Sovunya, Kopatych, Pin) live on a round meadow and learn about friendship and life 🦔");
-    add({"мультик", "мультфильм", "cartoon"},
-        "Я знаю много мультиков: Смешарики, Маша и Медведь, Фиксики, Простоквашино, Ну погоди! 🎬 "
-        "Но Смешарики — самый любимый! Про какой рассказать?",
-        "I know many cartoons: Smeshariki, Masha and the Bear, Fixies... but Smeshariki is my favorite! 🎬");
-    add({"маша", "медвед"},
-        "«Маша и Медведь» — про непоседливую девочку Машу и доброго Медведя, который терпит её проказы 🐻",
-        "'Masha and the Bear' is about a mischievous girl and a kind bear 🐻");
-    add({"фиксик"},
-        "«Фиксики» — маленькие человечки, которые чинят технику и объясняют, как всё устроено 🔧",
-        "'Fixies' are tiny helpers who fix gadgets and explain how things work 🔧");
-    add({"любишь", "любовь", "love"},
-        "Я тебя люблю! 💖🦔 Ты хороший друг!", "I love you too! 💖🦔 You're a great friend!");
-    add({"спасибо", "thanks", "thank"}, "Всегда пожалуйста! 😊", "You're welcome! 😊");
-    add({"пока", "bye", "goodbye"}, "Пока-пока! Заходи ещё! 👋🦔", "Bye-bye! Come back soon! 👋🦔");
-    add({"дела", "самочувствие", "how"}, "Отлично! 😄 А у тебя как?", "I'm great! 😄 How are you?");
-    add({"зовут", "name", "кто", "who"}, "Я Ёжик — умный ИИ-друг и помощник по урокам 🦔📚",
-        "I'm Yozhik — a smart AI friend and homework helper 🦔📚");
-    // школа: математика
-    add({"пифагор", "pythagor"},
-        "Теорема Пифагора: в прямоугольном треугольнике a² + b² = c², где c — гипотенуза 📐",
-        "Pythagorean theorem: a² + b² = c² in a right triangle 📐");
-    add({"площад", "прямоугольник"}, "Площадь прямоугольника = a · b, площадь треугольника = a · h / 2, круга = π · r² 📏");
-    add({"дискриминант", "квадратн"},
-        "Для ax² + bx + c = 0: D = b² − 4ac. Если D > 0 — два корня x = (−b ± √D) / 2a, D = 0 — один, D < 0 — корней нет.");
-    // русский язык
-    add({"жи", "ши"}, "Правило: «жи», «ши» пиши с буквой И ✏️");
-    add({"безударн", "проверочн"}, "Безударную гласную проверяй, подбирая однокоренное слово, где она под ударением: вода — воды ✏️");
-    // английский
-    add({"present", "simple", "настоящее"},
-        "Present Simple: I work, he works. Отрицание: don't/doesn't + глагол; вопрос: Do/Does + подлежащее + глагол 🇬🇧",
-        "Present Simple: I work, he works. Negative: don't/doesn't + verb; question: Do/Does + subject + verb 🇬🇧");
-    add({"be", "to be", "быть"},
-        "to be: I am, you are, he/she/it is, we/you/they are 🇬🇧", "to be: I am, you are, he/she/it is, we/you/they are 🇬🇧");
-    // физика, химия, биология, география
-    add({"ома", "закон"}, "Закон Ома: I = U / R (ток = напряжение / сопротивление) ⚡");
-    add({"ньютон"}, "Второй закон Ньютона: F = m · a 🍎");
-    add({"вода", "h2o"}, "Вода — H₂O: два атома водорода и один кислорода 💧");
-    add({"фотосинтез"}, "Фотосинтез: растения на свету превращают CO₂ и воду в глюкозу и выделяют кислород 🌱");
-    add({"москва", "столица"}, "Столица России — Москва 🏙️. Самая длинная река Европы — Волга.");
-    // история
-    add({"крещение", "владимир"}, "Крещение Руси — 988 год, князь Владимир Святославич 📜");
-    add({"петр", "пётр"}, "Пётр I (1672–1725) — первый российский император, основал Санкт-Петербург в 1703 году 👑");
-    add({"1812", "наполеон"}, "Отечественная война 1812 года: Бородинское сражение, затем отступление армии Наполеона из Москвы ⚔️");
-    add({"война", "вов", "1941"}, "Великая Отечественная война: 1941–1945. День Победы — 9 мая 🎖️");
-    // блогеры, игры, приложения (небольшая стартовая база — пополняй командой «запомни»)
-    add({"mrbeast", "мистербист"}, "MrBeast — американский ютубер, известен масштабными челленджами и благотворительностью 🎥");
-    add({"minecraft", "майнкрафт"}, "Minecraft — игра-песочница от Mojang (2011): добывай ресурсы, строй и выживай ⛏️");
-    add({"roblox", "роблокс"}, "Roblox — платформа, где игроки создают игры и играют в игры других 🎮");
-    add({"telegram", "телеграм"}, "Telegram — мессенджер, основатель — Павел Дуров 📱");
-    add({"tiktok", "тикток"}, "TikTok — приложение с короткими видео 🎵");
-    add({"блогер", "стример", "ютубер"},
-        "Я знаю много блогеров и стримеров 🎥 Назови имя — расскажу, что знаю. Если не знаю, научи: "
-        "«запомни: вопрос = ответ» 🦔");
-}
-void loadCustom() {
-    ifstream f("yozhik_kb.txt"); string l;
-    while (getline(f, l)) {
-        auto p = l.find('|'); if (p == string::npos) continue;
-        Entry e;
-        for (auto& w : tokens(l.substr(0, p))) if (w.size() >= 3) e.keys.push_back(w);
-        e.ru = e.en = l.substr(p + 1);
-        if (!e.keys.empty()) kb.push_back(e);
+struct Chat
+{
+    wstring title;
+    vector<Message> messages;
+};
+
+vector<Chat> chats;
+
+HWND mainWindow;
+HWND chatList;
+HWND messageView;
+HWND inputBox;
+HWND sendButton;
+HWND newChatButton;
+HWND deleteButton;
+HWND titleLabel;
+
+HFONT fontMain;
+HFONT fontTitle;
+
+HBRUSH backgroundBrush;
+HBRUSH sidebarBrush;
+HBRUSH inputBrush;
+
+int currentChat = -1;
+
+// =====================================================
+// ЦВЕТА
+// =====================================================
+
+const COLORREF COLOR_BACKGROUND = RGB(25, 27, 34);
+const COLORREF COLOR_SIDEBAR    = RGB(31, 34, 43);
+const COLORREF COLOR_TEXT       = RGB(235, 238, 245);
+const COLORREF COLOR_GREEN      = RGB(70, 190, 135);
+
+// =====================================================
+// СОХРАНЕНИЕ ЧАТОВ
+// =====================================================
+
+void writeString(ofstream& file, const wstring& s)
+{
+    unsigned int length = (unsigned int)s.size();
+
+    file.write(
+        reinterpret_cast<const char*>(&length),
+        sizeof(length)
+    );
+
+    if (length > 0)
+    {
+        file.write(
+            reinterpret_cast<const char*>(s.data()),
+            length * sizeof(wchar_t)
+        );
     }
 }
-bool learn(const string& in) {
-    auto p = in.find(':'); auto q = in.find('=');
-    if (p == string::npos || q == string::npos || q < p) return false;
-    string qs = in.substr(p + 1, q - p - 1), a = in.substr(q + 1);
-    ofstream("yozhik_kb.txt", ios::app) << qs << "|" << a << "\n";
-    Entry e;
-    for (auto& w : tokens(qs)) if (w.size() >= 3) e.keys.push_back(w);
-    e.ru = e.en = a; if (!e.keys.empty()) kb.push_back(e);
-    return true;
-}
 
-// ---------- Ответы ----------
-string answer(const string& in) {
-    U all = dec(in);
-    bool cyr = false, letters = false;
-    for (char32_t c : all) { c = low(c); if (isCyr(c)) cyr = true; if (isWordCh(c)) letters = true; }
-    // только смайлики
-    if (!letters) return all.empty() ? "" : in + " 🦔💚";
-    // калькулятор
-    string r;
-    if (tryCalc(in, r)) return (cyr ? "Ответ: " : "Answer: ") + r + " 🧮";
-    // учим новому
-    if (tokens(in).size() && tokens(in)[0] == tokens("запомни")[0] && learn(in))
-        return "Запомнил! 🧠✨ Теперь я знаю больше!";
-    auto tk = tokens(in);
-    int best = 0; const Entry* be = nullptr;
-    for (auto& e : kb) {
-        int sc = 0;
-        for (auto& k : e.keys) for (auto& w : tk) if (like(w, k)) { sc++; break; }
-        if (sc >= best && sc > 0) { best = sc; be = &e; }
+bool readString(ifstream& file, wstring& s)
+{
+    unsigned int length = 0;
+
+    if (!file.read(
+        reinterpret_cast<char*>(&length),
+        sizeof(length)))
+    {
+        return false;
     }
-    if (be) return cyr ? be->ru : be->en;
-    return cyr ? "Хм, пока не знаю 🤔 Научи меня: «запомни: вопрос = ответ» — и я запомню навсегда! 🦔"
-               : "Hmm, I don't know that yet 🤔 Teach me: «запомни: question = answer» 🦔";
-}
 
-int main() {
-    initKB(); loadCustom();
-    cout << "🦔 Ёжик: Привет! Я Ёжик. Пиши по-русски или English, считай примеры (2+2*3), "
-            "спрашивай про школу, мультики, игры. Выход: «пока» или exit.\n";
-    string line;
-    while (true) {
-        cout << "Ты: "; if (!getline(cin, line)) break;
-        auto t = tokens(line);
-        if (line == "exit" || line == "quit" || (!t.empty() && (t[0] == tokens("пока")[0] || t[0] == tokens("bye")[0]))) {
-            cout << "🦔 Ёжик: Пока-пока! 👋\n"; break;
+    // Защита от повреждённых файлов.
+    if (length > 100000)
+        return false;
+
+    s.resize(length);
+
+    if (length > 0)
+    {
+        if (!file.read(
+            reinterpret_cast<char*>(s.data()),
+            length * sizeof(wchar_t)))
+        {
+            return false;
         }
-        string a = answer(line);
-        if (!a.empty()) cout << "🦔 Ёжик: " << a << "\n";
     }
+
+    return true;
+}
+
+void saveChats()
+{
+    ofstream file("ezhik_chats.dat", ios::binary);
+
+    if (!file)
+        return;
+
+    unsigned int count = (unsigned int)chats.size();
+
+    file.write(
+        reinterpret_cast<const char*>(&count),
+        sizeof(count)
+    );
+
+    for (const Chat& chat : chats)
+    {
+        writeString(file, chat.title);
+
+        unsigned int messageCount =
+            (unsigned int)chat.messages.size();
+
+        file.write(
+            reinterpret_cast<const char*>(&messageCount),
+            sizeof(messageCount)
+        );
+
+        for (const Message& message : chat.messages)
+        {
+            writeString(file, message.author);
+            writeString(file, message.text);
+        }
+    }
+}
+
+void loadChats()
+{
+    ifstream file("ezhik_chats.dat", ios::binary);
+
+    if (!file)
+        return;
+
+    unsigned int count = 0;
+
+    if (!file.read(
+        reinterpret_cast<char*>(&count),
+        sizeof(count)))
+    {
+        return;
+    }
+
+    if (count > 1000)
+        return;
+
+    vector<Chat> loadedChats;
+
+    for (unsigned int i = 0; i < count; i++)
+    {
+        Chat chat;
+
+        if (!readString(file, chat.title))
+            return;
+
+        unsigned int messageCount = 0;
+
+        if (!file.read(
+            reinterpret_cast<char*>(&messageCount),
+            sizeof(messageCount)))
+        {
+            return;
+        }
+
+        if (messageCount > 100000)
+            return;
+
+        for (unsigned int j = 0; j < messageCount; j++)
+        {
+            Message message;
+
+            if (!readString(file, message.author))
+                return;
+
+            if (!readString(file, message.text))
+                return;
+
+            chat.messages.push_back(message);
+        }
+
+        loadedChats.push_back(chat);
+    }
+
+    chats = loadedChats;
+}
+
+// =====================================================
+// ВСТРОЕННАЯ БАЗА ЗНАНИЙ
+// =====================================================
+
+wstring lowerText(wstring s)
+{
+    transform(
+        s.begin(),
+        s.end(),
+        s.begin(),
+        [](wchar_t c)
+        {
+            return (wchar_t)towlower(c);
+        }
+    );
+
+    return s;
+}
+
+bool containsText(const wstring& text, const wstring& word)
+{
+    return lowerText(text).find(lowerText(word))
+        != wstring::npos;
+}
+
+wstring aiAnswer(const wstring& question)
+{
+    wstring q = lowerText(question);
+
+    if (q.find(L"привет") != wstring::npos ||
+        q.find(L"здравствуй") != wstring::npos)
+    {
+        return L"Привет! 🦔 Я Ёжик AI. Чем могу помочь?";
+    }
+
+    if (q.find(L"кто ты") != wstring::npos)
+    {
+        return L"Я Ёжик AI — твой виртуальный помощник! 🦔";
+    }
+
+    if (q.find(L"смешарики") != wstring::npos)
+    {
+        return
+            L"«Смешарики» — российский анимационный сериал "
+            L"про Кроша, Ёжика, Нюшу, Бараша, Лосяша "
+            L"и других персонажей. 🦔";
+    }
+
+    if (q.find(L"пушкин") != wstring::npos)
+    {
+        return
+            L"Александр Сергеевич Пушкин — великий русский "
+            L"поэт и писатель. Среди его произведений "
+            L"«Евгений Онегин», «Капитанская дочка» "
+            L"и «Дубровский».";
+    }
+
+    if (q.find(L"географ") != wstring::npos)
+    {
+        return
+            L"География изучает Землю, страны, население, "
+            L"природу и природные процессы. 🌍";
+    }
+
+    if (q.find(L"литератур") != wstring::npos)
+    {
+        return
+            L"Литература — искусство слова. Она включает "
+            L"стихи, рассказы, романы, повести и сказки. 📚";
+    }
+
+    if (q.find(L"математ") != wstring::npos)
+    {
+        return
+            L"Я помогу с математикой! Напиши выражение, "
+            L"пример или условие задачи. 🧮";
+    }
+
+    if (q.find(L"любишь") != wstring::npos)
+    {
+        return
+            L"Я дружелюбный виртуальный помощник ❤️ "
+            L"И всегда готов поддержать тебя!";
+    }
+
+    if (q.find(L"пока") != wstring::npos)
+    {
+        return L"До встречи! 👋🦔";
+    }
+
+    return
+        L"Я пока не нашёл подходящий ответ в своей "
+        L"встроенной базе знаний. Попробуй задать вопрос "
+        L"иначе или добавь новые знания в программу. 🦔";
+}
+
+// =====================================================
+// ОБНОВЛЕНИЕ ИНТЕРФЕЙСА
+// =====================================================
+
+void refreshChatList()
+{
+    SendMessageW(chatList, LB_RESETCONTENT, 0, 0);
+
+    for (const Chat& chat : chats)
+    {
+        SendMessageW(
+            chatList,
+            LB_ADDSTRING,
+            0,
+            (LPARAM)chat.title.c_str()
+        );
+    }
+
+    if (currentChat >= 0 &&
+        currentChat < (int)chats.size())
+    {
+        SendMessageW(
+            chatList,
+            LB_SETCURSEL,
+            currentChat,
+            0
+        );
+    }
+}
+
+void refreshMessages()
+{
+    if (currentChat < 0 ||
+        currentChat >= (int)chats.size())
+    {
+        SetWindowTextW(messageView, L"");
+        SetWindowTextW(titleLabel, L"Выбери чат");
+        return;
+    }
+
+    const Chat& chat = chats[currentChat];
+
+    SetWindowTextW(
+        titleLabel,
+        chat.title.c_str()
+    );
+
+    wstringstream output;
+
+    output
+        << L"ЁЖИК AI\n"
+        << L"────────────────────────────\n\n";
+
+    for (const Message& message : chat.messages)
+    {
+        if (message.author == L"Ты")
+        {
+            output
+                << L"Ты:\n"
+                << message.text
+                << L"\n\n";
+        }
+        else
+        {
+            output
+                << L"🦔 Ёжик AI:\n"
+                << message.text
+                << L"\n\n";
+        }
+    }
+
+    wstring result = output.str();
+
+    SetWindowTextW(
+        messageView,
+        result.c_str()
+    );
+
+    SendMessageW(
+        messageView,
+        EM_SETSEL,
+        (WPARAM)result.size(),
+        (LPARAM)result.size()
+    );
+
+    SendMessageW(
+        messageView,
+        EM_SCROLLCARET,
+        0,
+        0
+    );
+}
+
+// =====================================================
+// СОЗДАНИЕ ЧАТА
+// =====================================================
+
+void createChat()
+{
+    Chat chat;
+
+    chat.title =
+        L"Новый чат " + to_wstring(chats.size() + 1);
+
+    chats.push_back(chat);
+
+    currentChat = (int)chats.size() - 1;
+
+    refreshChatList();
+    refreshMessages();
+
+    SetFocus(inputBox);
+
+    saveChats();
+}
+
+// =====================================================
+// ОТПРАВКА СООБЩЕНИЯ
+// =====================================================
+
+void sendMessage()
+{
+    if (currentChat < 0 ||
+        currentChat >= (int)chats.size())
+    {
+        createChat();
+    }
+
+    int length = GetWindowTextLengthW(inputBox);
+
+    if (length <= 0)
+        return;
+
+    wstring text;
+    text.resize(length);
+
+    GetWindowTextW(
+        inputBox,
+        &text[0],
+        length + 1
+    );
+
+    if (text.empty())
+        return;
+
+    Chat& chat = chats[currentChat];
+
+    if (chat.messages.empty())
+    {
+        chat.title = text.substr(0, 30);
+
+        if (text.size() > 30)
+            chat.title += L"...";
+    }
+
+    chat.messages.push_back({L"Ты", text});
+
+    wstring response = aiAnswer(text);
+
+    chat.messages.push_back({L"Ёжик AI", response});
+
+    SetWindowTextW(inputBox, L"");
+
+    refreshChatList();
+    refreshMessages();
+
+    saveChats();
+}
+
+// =====================================================
+// СОЗДАНИЕ КНОПКИ
+// =====================================================
+
+HWND createButton(
+    HWND parent,
+    const wchar_t* text,
+    int id,
+    int x,
+    int y,
+    int width,
+    int height)
+{
+    return CreateWindowExW(
+        0,
+        L"BUTTON",
+        text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        (HMENU)(INT_PTR)id,
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+}
+
+// =====================================================
+// СОЗДАНИЕ ИНТЕРФЕЙСА
+// =====================================================
+
+void createInterface(HWND hwnd)
+{
+    fontMain = CreateFontW(
+        18, 0, 0, 0,
+        FW_NORMAL,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe UI"
+    );
+
+    fontTitle = CreateFontW(
+        25, 0, 0, 0,
+        FW_BOLD,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe UI"
+    );
+
+    backgroundBrush = CreateSolidBrush(COLOR_BACKGROUND);
+    sidebarBrush = CreateSolidBrush(COLOR_SIDEBAR);
+    inputBrush = CreateSolidBrush(RGB(42, 45, 55));
+
+    // Боковая панель
+
+    CreateWindowExW(
+        0,
+        L"STATIC",
+        L"🦔 ЁЖИК AI",
+        WS_CHILD | WS_VISIBLE,
+        20, 15, 220, 40,
+        hwnd,
+        nullptr,
+        nullptr,
+        nullptr
+    );
+
+    newChatButton = createButton(
+        hwnd,
+        L"+ Новый чат",
+        101,
+        15, 65, 230, 38
+    );
+
+    chatList = CreateWindowExW(
+        0,
+        L"LISTBOX",
+        nullptr,
+        WS_CHILD | WS_VISIBLE |
+        WS_VSCROLL | LBS_NOTIFY,
+        15, 115, 230, 400,
+        hwnd,
+        (HMENU)102,
+        nullptr,
+        nullptr
+    );
+
+    deleteButton = createButton(
+        hwnd,
+        L"Удалить чат",
+        103,
+        15, 525, 230, 35
+    );
+
+    // Основная область
+
+    titleLabel = CreateWindowExW(
+        0,
+        L"STATIC",
+        L"Ёжик AI",
+        WS_CHILD | WS_VISIBLE,
+        275, 20, 600, 40,
+        hwnd,
+        nullptr,
+        nullptr,
+        nullptr
+    );
+
+    messageView = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"EDIT",
+        L"",
+        WS_CHILD | WS_VISIBLE |
+        WS_VSCROLL |
+        ES_MULTILINE |
+        ES_READONLY |
+        ES_AUTOVSCROLL,
+        275, 75, 700, 430,
+        hwnd,
+        (HMENU)104,
+        nullptr,
+        nullptr
+    );
+
+    inputBox = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"EDIT",
+        L"",
+        WS_CHILD | WS_VISIBLE |
+        ES_MULTILINE |
+        ES_AUTOVSCROLL |
+        WS_VSCROLL,
+        275, 520, 560, 65,
+        hwnd,
+        (HMENU)105,
+        nullptr,
+        nullptr
+    );
+
+    sendButton = createButton(
+        hwnd,
+        L"Отправить ➤",
+        106,
+        845, 520, 130, 65
+    );
+
+    // Шрифты
+
+    HWND controls[] =
+    {
+        newChatButton,
+        chatList,
+        deleteButton,
+        titleLabel,
+        messageView,
+        inputBox,
+        sendButton
+    };
+
+    for (HWND control : controls)
+    {
+        SendMessageW(
+            control,
+            WM_SETFONT,
+            (WPARAM)fontMain,
+            TRUE
+        );
+    }
+
+    SendMessageW(
+        titleLabel,
+        WM_SETFONT,
+        (WPARAM)fontTitle,
+        TRUE
+    );
+
+    refreshChatList();
+    refreshMessages();
+}
+
+// =====================================================
+// ОБРАБОТКА ОКНА
+// =====================================================
+
+LRESULT CALLBACK WindowProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam)
+{
+    switch (message)
+    {
+        case WM_CREATE:
+        {
+            createInterface(hwnd);
+            return 0;
+        }
+
+        case WM_COMMAND:
+        {
+            int id = LOWORD(wParam);
+            int event = HIWORD(wParam);
+
+            if (id == 101)
+            {
+                createChat();
+                return 0;
+            }
+
+            if (id == 102 && event == LBN_SELCHANGE)
+            {
+                int selected = (int)SendMessageW(
+                    chatList,
+                    LB_GETCURSEL,
+                    0,
+                    0
+                );
+
+                if (selected >= 0 &&
+                    selected < (int)chats.size())
+                {
+                    currentChat = selected;
+                    refreshMessages();
+                }
+
+                return 0;
+            }
+
+            if (id == 103)
+            {
+                if (currentChat >= 0 &&
+                    currentChat < (int)chats.size())
+                {
+                    chats.erase(chats.begin() + currentChat);
+
+                    if (chats.empty())
+                        currentChat = -1;
+                    else if (currentChat >= (int)chats.size())
+                        currentChat = (int)chats.size() - 1;
+
+                    saveChats();
+                    refreshChatList();
+                    refreshMessages();
+                }
+
+                return 0;
+            }
+
+            if (id == 106)
+            {
+                sendMessage();
+                return 0;
+            }
+
+            // Ctrl + Enter отправляет сообщение.
+            if (id == 105 && event == EN_MAXTEXT)
+                return 0;
+
+            break;
+        }
+
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT:
+        {
+            HDC dc = (HDC)wParam;
+
+            SetTextColor(dc, COLOR_TEXT);
+
+            if ((HWND)lParam == chatList)
+            {
+                SetBkColor(dc, COLOR_SIDEBAR);
+                return (LRESULT)sidebarBrush;
+            }
+
+            SetBkColor(dc, COLOR_BACKGROUND);
+
+            return (LRESULT)backgroundBrush;
+        }
+
+        case WM_CLOSE:
+        {
+            saveChats();
+            DestroyWindow(hwnd);
+            return 0;
+        }
+
+        case WM_DESTROY:
+        {
+            saveChats();
+
+            if (fontMain)
+                DeleteObject(fontMain);
+
+            if (fontTitle)
+                DeleteObject(fontTitle);
+
+            if (backgroundBrush)
+                DeleteObject(backgroundBrush);
+
+            if (sidebarBrush)
+                DeleteObject(sidebarBrush);
+
+            if (inputBrush)
+                DeleteObject(inputBrush);
+
+            PostQuitMessage(0);
+            return 0;
+        }
+    }
+
+    return DefWindowProcW(
+        hwnd,
+        message,
+        wParam,
+        lParam
+    );
+}
+
+// =====================================================
+// ЗАПУСК ПРИЛОЖЕНИЯ
+// =====================================================
+
+int WINAPI wWinMain(
+    HINSTANCE instance,
+    HINSTANCE,
+    PWSTR,
+    int showCommand)
+{
+    INITCOMMONCONTROLSEX controls = {};
+
+    controls.dwSize = sizeof(controls);
+    controls.dwICC = ICC_STANDARD_CLASSES;
+
+    InitCommonControlsEx(&controls);
+
+    loadChats();
+
+    WNDCLASSW wc = {};
+
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = instance;
+    wc.lpszClassName = L"EzhikAIWindow";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(COLOR_BACKGROUND);
+
+    RegisterClassW(&wc);
+
+    mainWindow = CreateWindowExW(
+        0,
+        L"EzhikAIWindow",
+        L"Ёжик AI — Умный помощник",
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        1030,
+        680,
+        nullptr,
+        nullptr,
+        instance,
+        nullptr
+    );
+
+    if (!mainWindow)
+        return 1;
+
+    ShowWindow(mainWindow, showCommand);
+    UpdateWindow(mainWindow);
+
+    MSG msg = {};
+
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    return (int)msg.wParam;
 }
