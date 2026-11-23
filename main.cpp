@@ -212,7 +212,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
 
     DWORD pid = FindPid(L"cs2.exe");
-    if (!pid) { MessageBoxW(0, L"Запусти CS2 сначала!", L"deebsofting", MB_ICONERROR); return 1; }
+if (!pid) { MessageBoxW(0, L"Start CS2 first!", L"deebsofting", MB_ICONERROR); return 1; }
     g_proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!g_proc) { MessageBoxW(0, L"Запусти от админа!", L"deebsofting", MB_ICONERROR); return 2; }
     g_client = ModuleBase(pid, L"client.dll");
