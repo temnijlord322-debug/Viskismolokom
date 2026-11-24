@@ -1,259 +1,959 @@
-// language: C++, file: deebsofting_full.cpp, target: Windows x64, MSVC
-#define _USE_MATH_DEFINES
+#define UNICODE
+#define _UNICODE
+#define NOMINMAX
+
 #include <windows.h>
-#include <tlhelp32.h>
-#include <gdiplus.h>
-#include <cmath>
 #include <string>
-#include <thread>
-#include <chrono>
+#include <vector>
+#include <fstream>
+#include <algorithm>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
-#pragma comment(lib, "gdiplus.lib")
 
-using namespace Gdiplus;
+using namespace std;
 
-// --- ОФФСЕТЫ (ЗАМЕНИТЬ НА АКТУАЛЬНЫЕ ИЗ CS2-DUMPER) ---
-namespace offsets {
-    constexpr uintptr_t dwEntityList = 0x18C7B28;
-    constexpr uintptr_t dwLocalPlayerPawn = 0x1873A20;
-    constexpr uintptr_t dwViewMatrix = 0x194A5C0;
-    constexpr uintptr_t dwViewAngles = 0x194AAB8;
-}
-namespace schema {
-    namespace C_BaseEntity {
-        constexpr uintptr_t m_iTeamNum = 0x3C8;
-        constexpr uintptr_t m_iHealth = 0x344;
-        constexpr uintptr_t m_pGameSceneNode = 0x328;
-        constexpr uintptr_t m_fFlags = 0x3D4;
-    }
-    namespace C_GameSceneNode {
-        constexpr uintptr_t m_vecAbsOrigin = 0xC8;
-        constexpr uintptr_t m_vecAbsVelocity = 0xCC; 
-    }
-    namespace CCSPlayerController {
-        constexpr uintptr_t m_hPlayerPawn = 0x7BC;
-    }
-}
-// --------------------------------------------------------
+// ==========================================
+// DEEBSOFTING 1.0
+// ==========================================
 
-struct Vec3 { float x, y, z; };
-struct Vec2 { float x, y; };
-struct QAngle { float pitch, yaw, roll; };
+const int WIDTH = 1050;
+const int HEIGHT = 680;
 
-static HANDLE g_proc = nullptr;
-static uintptr_t g_client = 0;
-static bool g_esp = true;
-static bool g_menuOpen = true;
-static bool g_running = true;
+const COLORREF BG       = RGB(12, 12, 15);
+const COLORREF SIDEBAR  = RGB(17, 17, 21);
+const COLORREF PANEL    = RGB(23, 23, 28);
+const COLORREF PANEL2   = RGB(29, 29, 35);
+const COLORREF RED      = RGB(220, 35, 48);
+const COLORREF RED2     = RGB(150, 20, 32);
+const COLORREF WHITE    = RGB(240, 240, 245);
+const COLORREF GRAY     = RGB(135, 135, 145);
+const COLORREF GREEN    = RGB(65, 190, 110);
 
-template<typename T> bool Read(uintptr_t addr, T& out) {
-    return ReadProcessMemory(g_proc, (LPCVOID)addr, &out, sizeof(T), nullptr) != 0;
-}
+HWND hwnd;
 
-DWORD FindPid(const wchar_t* name) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    PROCESSENTRY32W pe{ sizeof(pe) }; DWORD pid = 0;
-    if (Process32FirstW(snap, &pe)) do {
-        if (!_wcsicmp(pe.szExeFile, name)) { pid = pe.th32ProcessID; break; }
-    } while (Process32NextW(snap, &pe));
-    CloseHandle(snap); return pid;
-}
+HFONT fontNormal;
+HFONT fontSmall;
+HFONT fontTitle;
+HFONT fontBig;
 
-uintptr_t ModuleBase(DWORD pid, const wchar_t* mod) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-    MODULEENTRY32W me{ sizeof(me) }; uintptr_t base = 0;
-    if (Module32FirstW(snap, &me)) do {
-        if (!_wcsicmp(me.szModule, mod)) { base = (uintptr_t)me.modBaseAddr; break; }
-    } while (Module32NextW(snap, &me));
-    CloseHandle(snap); return base;
-}
+int currentPage = 0;
 
-struct Entity {
-    uintptr_t pawn = 0;
-    int team = 0;
-    int health = 0;
-    Vec3 origin{};
+bool menuVisible = true;
+
+struct Setting
+{
+    wstring name;
+    bool enabled;
+    int value;
+    int minimum;
+    int maximum;
+    bool slider;
 };
 
-bool GetEntity(int index, Entity& e) {
-    uintptr_t list = 0;
-    if (!Read(g_client + offsets::dwEntityList, list) || !list) return false;
-    uintptr_t chunk = 0;
-    if (!Read(list + 0x8 * (index >> 9) + 0x10, chunk) || !chunk) return false;
-    uintptr_t identity = 0;
-    if (!Read(chunk + 0x78 * (index & 0x1FF), identity) || !identity) return false;
-    uintptr_t controller = 0;
-    if (!Read(identity + 0x10, controller) || !controller) return false;
-    if (!Read(controller + schema::CCSPlayerController::m_hPlayerPawn, e.pawn) || !e.pawn) return false;
-    if (!Read(e.pawn + schema::C_BaseEntity::m_iTeamNum, e.team)) return false;
-    if (!Read(e.pawn + schema::C_BaseEntity::m_iHealth, e.health)) return false;
-    uintptr_t node = 0;
-    if (!Read(e.pawn + schema::C_BaseEntity::m_pGameSceneNode, node) || !node) return false;
-    if (!Read(node + schema::C_GameSceneNode::m_vecAbsOrigin, e.origin)) return false;
-    return true;
+vector<Setting> settings[7];
+
+// ==========================================
+// DRAW FUNCTIONS
+// ==========================================
+
+void Fill(HDC dc, int x, int y, int w, int h, COLORREF color)
+{
+    HBRUSH brush = CreateSolidBrush(color);
+
+    RECT r = { x, y, x + w, y + h };
+
+    FillRect(dc, &r, brush);
+
+    DeleteObject(brush);
 }
 
-bool WorldToScreen(const Vec3& w, Vec2& s, int ww, int wh) {
-    float m[16];
-    if (!Read(g_client + offsets::dwViewMatrix, m)) return false;
-    float clipX = w.x*m[0] + w.y*m[1] + w.z*m[2]  + m[3];
-    float clipY = w.x*m[4] + w.y*m[5] + w.z*m[6]  + m[7];
-    float clipW = w.x*m[12]+ w.y*m[13]+ w.z*m[14] + m[15];
-    if (clipW < 0.01f) return false;
-    float ndcX = clipX / clipW, ndcY = clipY / clipW;
-    s.x = (ww * 0.5f) * (ndcX + 1.0f);
-    s.y = (wh * 0.5f) * (1.0f - ndcY);
-    return true;
+void Text(
+    HDC dc,
+    int x,
+    int y,
+    const wstring& str,
+    COLORREF color,
+    HFONT font = nullptr
+)
+{
+    SetTextColor(dc, color);
+    SetBkMode(dc, TRANSPARENT);
+
+    HFONT old = nullptr;
+
+    if (font)
+        old = (HFONT)SelectObject(dc, font);
+
+    TextOutW(
+        dc,
+        x,
+        y,
+        str.c_str(),
+        (int)str.size()
+    );
+
+    if (old)
+        SelectObject(dc, old);
 }
 
-void DrawESP(HDC hdc, int sw, int sh) {
-    uintptr_t localPawn = 0; 
-    if (!Read(g_client + offsets::dwLocalPlayerPawn, localPawn) || !localPawn) return;
-    
-    int myTeam = 0; 
-    if (!Read(localPawn + schema::C_BaseEntity::m_iTeamNum, myTeam)) return;
-    
-    uintptr_t myNode = 0; 
-    if (!Read(localPawn + schema::C_BaseEntity::m_pGameSceneNode, myNode) || !myNode) return;
-    
-    Vec3 myPos{}; 
-    if (!Read(myNode + schema::C_GameSceneNode::m_vecAbsOrigin, myPos)) return;
+void Rounded(
+    HDC dc,
+    int x,
+    int y,
+    int w,
+    int h,
+    COLORREF color
+)
+{
+    HBRUSH brush = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
 
-    Graphics graphics(hdc);
-    graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+    HBRUSH oldBrush =
+        (HBRUSH)SelectObject(dc, brush);
 
-    FontFamily fontFamily(L"Consolas");
-    Font textFont(&fontFamily, 14, FontStyleBold, UnitPixel);
+    HPEN oldPen =
+        (HPEN)SelectObject(dc, pen);
 
-    for (int i = 1; i < 64; i++) {
-        Entity e{}; 
-        if (!GetEntity(i, e)) continue;
-        if (e.health <= 0 || e.health > 100 || e.pawn == localPawn || e.team == myTeam) continue;
-        
-        Vec2 head{}, feet{};
-        Vec3 hp = e.origin; hp.z += 72.0f;
-        if (!WorldToScreen(hp, head, sw, sh) || !WorldToScreen(e.origin, feet, sw, sh)) continue;
-        
-        int h = (int)(feet.y - head.y); 
-        int w = h / 2; 
-        int x = (int)head.x - w / 2; 
-        int y = (int)head.y;
+    RoundRect(
+        dc,
+        x, y,
+        x + w, y + h,
+        9, 9
+    );
 
-        // Расчет дистанции
-        float dx = e.origin.x - myPos.x;
-        float dy = e.origin.y - myPos.y;
-        float dz = e.origin.z - myPos.z;
-        float dist_m = sqrtf(dx*dx + dy*dy + dz*dz) / 52.0f; // 1 unit ~ 1.9cm
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
 
-        // Обводка (Glow)
-        Color glowColor(150, 255, 0, 0); 
-        Color solidColor(255, 255, 0, 0); 
-        
-        Pen glowPen(glowColor, 4.0f);
-        graphics.DrawRectangle(&glowPen, x, y, w, h);
-        
-        Pen solidPen(solidColor, 1.5f);
-        graphics.DrawRectangle(&solidPen, x, y, w, h);
+    DeleteObject(brush);
+    DeleteObject(pen);
+}
 
-        // HP и Дистанция
-        SolidBrush healthBrush(Color(255, 255, 255, 255));
-        wchar_t hpBuf[16];
-        swprintf_s(hpBuf, L"%d HP", e.health);
-        graphics.DrawString(hpBuf, -1, &textFont, PointF((REAL)x, (REAL)(y - 20)), &healthBrush);
+// ==========================================
+// SETTINGS
+// ==========================================
 
-        SolidBrush distBrush(Color(255, 200, 200, 200));
-        wchar_t distBuf[16];
-        swprintf_s(distBuf, L"[%.0fm]", dist_m); 
-        RectF bounds;
-        graphics.MeasureString(distBuf, -1, &textFont, PointF(0,0), &bounds);
-        graphics.DrawString(distBuf, -1, &textFont, PointF((REAL)(x + w - bounds.Width), (REAL)(y - 20)), &distBrush);
+void AddToggle(
+    int page,
+    const wstring& name,
+    bool enabled = false
+)
+{
+    Setting s;
+
+    s.name = name;
+    s.enabled = enabled;
+    s.value = 0;
+    s.minimum = 0;
+    s.maximum = 0;
+    s.slider = false;
+
+    settings[page].push_back(s);
+}
+
+void AddSlider(
+    int page,
+    const wstring& name,
+    int value,
+    int minimum,
+    int maximum
+)
+{
+    Setting s;
+
+    s.name = name;
+    s.enabled = false;
+    s.value = value;
+    s.minimum = minimum;
+    s.maximum = maximum;
+    s.slider = true;
+
+    settings[page].push_back(s);
+}
+
+void Initialize()
+{
+    // VISUALS
+
+    AddToggle(1, L"ESP Preview", true);
+    AddToggle(1, L"Box ESP", true);
+    AddToggle(1, L"Health Bar", true);
+    AddToggle(1, L"Player Names", true);
+    AddToggle(1, L"Distance", false);
+    AddToggle(1, L"Skeleton", false);
+    AddToggle(1, L"Tracers", false);
+
+    AddSlider(1, L"Box Thickness", 2, 1, 5);
+    AddSlider(1, L"ESP Opacity", 85, 0, 100);
+
+    // AIMBOT
+
+    AddToggle(2, L"Aimbot Preview", true);
+    AddToggle(2, L"Head Priority", true);
+    AddToggle(2, L"No Scope Preview", false);
+    AddToggle(2, L"Air Shot Preview", false);
+
+    AddSlider(2, L"FOV", 35, 1, 180);
+    AddSlider(2, L"Smooth", 5, 1, 20);
+    AddSlider(2, L"Distance", 100, 1, 500);
+
+    // ANTI AIM
+
+    AddToggle(3, L"Anti-Aim Preview", false);
+    AddToggle(3, L"Fake Angles Preview", false);
+    AddToggle(3, L"Rotation Preview", false);
+
+    AddSlider(3, L"Rotation Speed", 5, 1, 10);
+    AddSlider(3, L"Rotation Angle", 90, 0, 360);
+
+    // MOVEMENT
+
+    AddToggle(4, L"Bunny Hop Preview", false);
+    AddToggle(4, L"Auto-Strafe Preview", false);
+    AddToggle(4, L"Auto-Stop Preview", false);
+
+    AddSlider(4, L"Bunny Hop Intensity", 5, 1, 10);
+
+    // MISC
+
+    AddToggle(5, L"Third Person Preview", false);
+    AddToggle(5, L"Triggerbot Preview", false);
+    AddToggle(5, L"Watermark", true);
+    AddToggle(5, L"Show FPS", true);
+
+    // CONFIGS
+
+    AddToggle(6, L"Auto Save", true);
+}
+
+// ==========================================
+// SAVE / LOAD
+// ==========================================
+
+void SaveConfig()
+{
+    ofstream file("deebsofting.ini");
+
+    if (!file.is_open())
+        return;
+
+    for (int p = 0; p < 7; p++)
+    {
+        for (int i = 0; i < (int)settings[p].size(); i++)
+        {
+            file
+                << p << " "
+                << i << " "
+                << settings[p][i].enabled << " "
+                << settings[p][i].value
+                << "\n";
+        }
     }
 }
 
-void DrawMenu(HDC hdc, int sw, int sh) {
-    Graphics graphics(hdc);
-    graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-    
-    int mw = 400, mh = 250;
-    int mx = (sw - mw) / 2, my = (sh - mh) / 2;
+void LoadConfig()
+{
+    ifstream file("deebsofting.ini");
 
-    SolidBrush bgBrush(Color(240, 14, 14, 18));
-    graphics.FillRectangle(&bgBrush, mx, my, mw, mh);
+    if (!file.is_open())
+        return;
 
-    Pen borderPen(Color(255, 255, 0, 0), 2.0f);
-    graphics.DrawRectangle(&borderPen, mx, my, mw, mh);
+    int page, index, enabled, value;
 
-    FontFamily fontFamily(L"Segoe UI");
-    Font titleFont(&fontFamily, 20, FontStyleBold, UnitPixel);
-    Font textFont(&fontFamily, 14, FontStyleRegular, UnitPixel);
+    while (file >> page >> index >> enabled >> value)
+    {
+        if (page >= 0 && page < 7)
+        {
+            if (index >= 0 &&
+                index < (int)settings[page].size())
+            {
+                settings[page][index].enabled =
+                    enabled != 0;
 
-    SolidBrush titleBrush(Color(255, 255, 0, 0));
-    SolidBrush textBrush(Color(255, 230, 230, 235));
-
-    graphics.DrawString(L"deebsofting", -1, &titleFont, PointF((REAL)(mx + 20), (REAL)(my + 15)), &titleBrush);
-    
-    std::wstring espState = L"ESP: " + std::wstring(g_esp ? L"ON" : L"OFF") + L" (F8)";
-    graphics.DrawString(espState.c_str(), -1, &textFont, PointF((REAL)(mx + 20), (REAL)(my + 70)), &textBrush);
-
-    graphics.DrawString(L"F12 - Exit", -1, &textFont, PointF((REAL)(mx + 20), (REAL)(my + mh - 30)), &textBrush);
+                settings[page][index].value =
+                    value;
+            }
+        }
+    }
 }
 
-LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == WM_DESTROY) { PostQuitMessage(0); return 0; }
-    return DefWindowProcW(h, m, w, l);
+// ==========================================
+// NAVIGATION
+// ==========================================
+
+const wchar_t* pages[] =
+{
+    L"Dashboard",
+    L"Visuals",
+    L"Aimbot",
+    L"Anti-Aim",
+    L"Movement",
+    L"Misc",
+    L"Configs"
+};
+
+void DrawSidebar(HDC dc)
+{
+    Fill(dc, 0, 0, 230, HEIGHT, SIDEBAR);
+
+    // LOGO
+
+    Rounded(dc, 20, 20, 42, 42, RED);
+
+    Text(
+        dc,
+        30,
+        30,
+        L"D",
+        WHITE,
+        fontBig
+    );
+
+    Text(
+        dc,
+        72,
+        22,
+        L"DEEBSOFTING",
+        WHITE,
+        fontTitle
+    );
+
+    Text(
+        dc,
+        72,
+        48,
+        L"PREMIUM INTERFACE",
+        GRAY,
+        fontSmall
+    );
+
+    Fill(dc, 18, 85, 194, 1, RGB(45, 45, 52));
+
+    // NAVIGATION
+
+    for (int i = 0; i < 7; i++)
+    {
+        int y = 110 + i * 58;
+
+        if (currentPage == i)
+        {
+            Rounded(
+                dc,
+                13,
+                y,
+                203,
+                45,
+                RED2
+            );
+
+            Fill(
+                dc,
+                13,
+                y + 8,
+                3,
+                29,
+                RED
+            );
+        }
+
+        Text(
+            dc,
+            32,
+            y + 13,
+            pages[i],
+            currentPage == i ? WHITE : GRAY,
+            fontNormal
+        );
+    }
+
+    Fill(dc, 18, 625, 194, 1, RGB(45, 45, 52));
+
+    Text(
+        dc,
+        25,
+        642,
+        L"DEEBSOFTING 1.0",
+        GRAY,
+        fontSmall
+    );
 }
 
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
-    // Инициализация GDI+
-    GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+// ==========================================
+// DASHBOARD
+// ==========================================
 
-    DWORD pid = FindPid(L"cs2.exe");
-if (!pid) { MessageBoxW(0, L"Start CS2 first!", L"deebsofting", MB_ICONERROR); return 1; }
-    g_proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (!g_proc) { MessageBoxW(0, L"Запусти от админа!", L"deebsofting", MB_ICONERROR); return 2; }
-    g_client = ModuleBase(pid, L"client.dll");
-    if (!g_client) return 3;
+void DrawDashboard(HDC dc)
+{
+    Text(
+        dc,
+        265,
+        35,
+        L"Dashboard",
+        WHITE,
+        fontTitle
+    );
 
-    WNDCLASSEXW wc{ sizeof(wc) };
-    wc.lpfnWndProc = WndProc; wc.hInstance = hInst; wc.lpszClassName = L"cf_overlay";
-    RegisterClassExW(&wc);
-    HWND hwnd = CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOPMOST|WS_EX_TOOLWINDOW, 
-        L"cf_overlay", L"", WS_POPUP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), 0, 0, hInst, 0);
-    
-    SetLayeredWindowAttributes(hwnd, RGB(0,0,0), 0, LWA_COLORKEY);
+    Text(
+        dc,
+        265,
+        75,
+        L"Welcome to DEEBSOFTING",
+        GRAY,
+        fontNormal
+    );
+
+    // STATUS
+
+    Rounded(dc, 265, 125, 730, 105, PANEL);
+
+    Fill(dc, 265, 125, 4, 105, RED);
+
+    Text(
+        dc,
+        290,
+        150,
+        L"APPLICATION STATUS",
+        GRAY,
+        fontSmall
+    );
+
+    Text(
+        dc,
+        290,
+        180,
+        L"Interface is running",
+        GREEN,
+        fontTitle
+    );
+
+    // CARDS
+
+    const wchar_t* cardNames[] =
+    {
+        L"VISUALS",
+        L"AIMBOT",
+        L"ANTI-AIM"
+    };
+
+    for (int i = 0; i < 3; i++)
+    {
+        int x = 265 + i * 245;
+
+        Rounded(
+            dc,
+            x,
+            260,
+            225,
+            130,
+            PANEL
+        );
+
+        Text(
+            dc,
+            x + 20,
+            280,
+            cardNames[i],
+            GRAY,
+            fontSmall
+        );
+
+        Text(
+            dc,
+            x + 20,
+            320,
+            L"CONFIGURATION",
+            WHITE,
+            fontTitle
+        );
+
+        Text(
+            dc,
+            x + 20,
+            355,
+            L"Open section",
+            RED,
+            fontSmall
+        );
+    }
+
+    Rounded(dc, 265, 420, 730, 155, PANEL);
+
+    Text(
+        dc,
+        290,
+        445,
+        L"INFORMATION",
+        WHITE,
+        fontTitle
+    );
+
+    Text(
+        dc,
+        290,
+        490,
+        L"Standalone interface and local simulation.",
+        GRAY
+    );
+
+    Text(
+        dc,
+        290,
+        520,
+        L"No connection to the CS2 process.",
+        GRAY
+    );
+}
+
+// ==========================================
+// SETTINGS DRAWING
+// ==========================================
+
+void DrawSettings(HDC dc)
+{
+    Text(
+        dc,
+        265,
+        35,
+        pages[currentPage],
+        WHITE,
+        fontTitle
+    );
+
+    Text(
+        dc,
+        265,
+        75,
+        L"Customize your configuration",
+        GRAY
+    );
+
+    auto& list = settings[currentPage];
+
+    int y = 125;
+
+    for (int i = 0; i < (int)list.size(); i++)
+    {
+        Setting& s = list[i];
+
+        Rounded(
+            dc,
+            265,
+            y,
+            730,
+            55,
+            PANEL
+        );
+
+        Text(
+            dc,
+            290,
+            y + 18,
+            s.name,
+            WHITE,
+            fontNormal
+        );
+
+        if (!s.slider)
+        {
+            COLORREF color =
+                s.enabled ? RED : RGB(65, 65, 72);
+
+            Rounded(
+                dc,
+                925,
+                y + 15,
+                48,
+                25,
+                color
+            );
+
+            int circleX =
+                s.enabled ? 951 : 929;
+
+            HBRUSH brush =
+                CreateSolidBrush(WHITE);
+
+            HBRUSH old =
+                (HBRUSH)SelectObject(dc, brush);
+
+            HPEN pen = CreatePen(
+                PS_NULL,
+                0,
+                WHITE
+            );
+
+            HPEN oldPen =
+                (HPEN)SelectObject(dc, pen);
+
+            Ellipse(
+                dc,
+                circleX,
+                y + 18,
+                circleX + 19,
+                y + 37
+            );
+
+            SelectObject(dc, old);
+            SelectObject(dc, oldPen);
+
+            DeleteObject(brush);
+            DeleteObject(pen);
+        }
+        else
+        {
+            Text(
+                dc,
+                900,
+                y + 17,
+                to_wstring(s.value),
+                RED,
+                fontNormal
+            );
+
+            Fill(
+                dc,
+                750,
+                y + 26,
+                130,
+                4,
+                RGB(65, 65, 72)
+            );
+
+            int pos =
+                750 +
+                (s.value - s.minimum) * 130 /
+                max(1, s.maximum - s.minimum);
+
+            Fill(
+                dc,
+                750,
+                y + 26,
+                pos - 750,
+                4,
+                RED
+            );
+
+            Rounded(
+                dc,
+                pos - 6,
+                y + 19,
+                12,
+                18,
+                RED
+            );
+        }
+
+        y += 68;
+    }
+
+    if (currentPage == 6)
+    {
+        Text(
+            dc,
+            290,
+            610,
+            L"Configuration is saved in deebsofting.ini",
+            GRAY,
+            fontSmall
+        );
+    }
+}
+
+// ==========================================
+// PAINT
+// ==========================================
+
+void DrawInterface(HDC dc)
+{
+    Fill(dc, 0, 0, WIDTH, HEIGHT, BG);
+
+    DrawSidebar(dc);
+
+    if (currentPage == 0)
+        DrawDashboard(dc);
+    else
+        DrawSettings(dc);
+
+    // TOP RIGHT STATUS
+
+    Rounded(dc, 850, 20, 145, 32, PANEL2);
+
+    Text(
+        dc,
+        870,
+        28,
+        L"●  ONLINE",
+        GREEN,
+        fontSmall
+    );
+}
+
+// ==========================================
+// MOUSE
+// ==========================================
+
+void HandleClick(int x, int y)
+{
+    // SIDEBAR
+
+    if (x < 230)
+    {
+        if (y >= 110 && y < 110 + 7 * 58)
+        {
+            currentPage =
+                (y - 110) / 58;
+
+            InvalidateRect(hwnd, nullptr, TRUE);
+        }
+
+        return;
+    }
+
+    if (currentPage == 0)
+        return;
+
+    auto& list = settings[currentPage];
+
+    int row = (y - 125) / 68;
+
+    if (row < 0 || row >= (int)list.size())
+        return;
+
+    Setting& s = list[row];
+
+    if (!s.slider)
+    {
+        s.enabled = !s.enabled;
+    }
+    else
+    {
+        int newValue =
+            s.minimum +
+            (x - 750) * (s.maximum - s.minimum) / 130;
+
+        s.value = max(
+            s.minimum,
+            min(s.maximum, newValue)
+        );
+    }
+
+    SaveConfig();
+
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+// ==========================================
+// WINDOW PROCEDURE
+// ==========================================
+
+LRESULT CALLBACK WindowProc(
+    HWND window,
+    UINT msg,
+    WPARAM wParam,
+    LPARAM lParam
+)
+{
+    switch (msg)
+    {
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+
+        HDC dc = BeginPaint(window, &ps);
+
+        HDC memory = CreateCompatibleDC(dc);
+
+        HBITMAP bitmap = CreateCompatibleBitmap(
+            dc,
+            WIDTH,
+            HEIGHT
+        );
+
+        HBITMAP old =
+            (HBITMAP)SelectObject(memory, bitmap);
+
+        DrawInterface(memory);
+
+        BitBlt(
+            dc,
+            0,
+            0,
+            WIDTH,
+            HEIGHT,
+            memory,
+            0,
+            0,
+            SRCCOPY
+        );
+
+        SelectObject(memory, old);
+
+        DeleteObject(bitmap);
+        DeleteDC(memory);
+
+        EndPaint(window, &ps);
+
+        return 0;
+    }
+
+    case WM_LBUTTONDOWN:
+    {
+        int x = LOWORD(lParam);
+        int y = HIWORD(lParam);
+
+        HandleClick(x, y);
+
+        return 0;
+    }
+
+    case WM_HOTKEY:
+    {
+        if (wParam == 1)
+        {
+            menuVisible = !menuVisible;
+
+            ShowWindow(
+                window,
+                menuVisible ? SW_SHOW : SW_HIDE
+            );
+        }
+
+        if (wParam == 2)
+        {
+            ShowWindow(window, SW_HIDE);
+            menuVisible = false;
+        }
+
+        if (wParam == 3)
+        {
+            DestroyWindow(window);
+        }
+
+        return 0;
+    }
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    return DefWindowProcW(
+        window,
+        msg,
+        wParam,
+        lParam
+    );
+}
+
+// ==========================================
+// MAIN
+// ==========================================
+
+int WINAPI WinMain(
+    HINSTANCE instance,
+    HINSTANCE,
+    LPSTR,
+    int
+)
+{
+    Initialize();
+    LoadConfig();
+
+    fontNormal = CreateFontW(
+        17, 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH,
+        L"Segoe UI"
+    );
+
+    fontSmall = CreateFontW(
+        12, 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH,
+        L"Segoe UI"
+    );
+
+    fontTitle = CreateFontW(
+        24, 0, 0, 0, FW_BOLD,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH,
+        L"Segoe UI"
+    );
+
+    fontBig = CreateFontW(
+        32, 0, 0, 0, FW_BOLD,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH,
+        L"Segoe UI"
+    );
+
+    WNDCLASSW wc{};
+
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = instance;
+    wc.lpszClassName = L"DEEBSOFTING_WINDOW";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = CreateSolidBrush(BG);
+
+    RegisterClassW(&wc);
+
+    hwnd = CreateWindowExW(
+        0,
+        wc.lpszClassName,
+        L"DEEBSOFTING",
+        WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        WIDTH,
+        HEIGHT,
+        nullptr,
+        nullptr,
+        instance,
+        nullptr
+    );
+
+    if (!hwnd)
+        return 1;
+
+    RegisterHotKey(hwnd, 1, 0, VK_INSERT);
+    RegisterHotKey(hwnd, 2, 0, VK_DELETE);
+    RegisterHotKey(hwnd, 3, 0, VK_END);
+
     ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
 
-    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
-    HDC screen = GetDC(0), mem = CreateCompatibleDC(screen);
-    HBITMAP bmp = CreateCompatibleBitmap(screen, sw, sh);
-    HGDIOBJ old = SelectObject(mem, bmp);
+    MSG msg{};
 
-    while (g_running) {
-        // Выход по F12, чтобы наверняка
-        if (GetAsyncKeyState(VK_F12) & 1) g_running = false;
-        if (GetAsyncKeyState(VK_DELETE) & 1) g_menuOpen = !g_menuOpen;
-        if (GetAsyncKeyState(VK_F8) & 1) g_esp = !g_esp;
-
-        // Очистка фона
-        PatBlt(mem, 0, 0, sw, sh, BLACKNESS);
-        
-        // Рисуем
-        if (g_esp) DrawESP(mem, sw, sh);
-        if (g_menuOpen) DrawMenu(mem, sw, sh);
-        
-        // Выводим на экран
-        BitBlt(screen, 0, 0, sw, sh, mem, 0, 0, SRCCOPY);
-
-        // ВАЖНО: Слип, чтобы прога не жрала 100% ЦП и не лагала
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    while (GetMessageW(&msg, nullptr, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 
-    // Очистка (если вышли из цикла)
-    SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem); ReleaseDC(0, screen);
-    GdiplusShutdown(gdiplusToken);
+    UnregisterHotKey(hwnd, 1);
+    UnregisterHotKey(hwnd, 2);
+    UnregisterHotKey(hwnd, 3);
+
+    DeleteObject(fontNormal);
+    DeleteObject(fontSmall);
+    DeleteObject(fontTitle);
+    DeleteObject(fontBig);
+
     return 0;
 }
